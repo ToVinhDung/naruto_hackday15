@@ -1,0 +1,24 @@
+{
+  "name": "my-vibecode-app",
+  "version": "1.0.0",
+  "description": "Hệ thống Vibe Coding chuẩn hóa cho Google Antigravity, tích hợp PowerBatch Orchestrator, Vercel Cloud Pipeline và White UI Design System",
+  "type": "module",
+  "scripts": {
+    "dev": "node src/server.mjs",
+    "test": "node --test tests/system.test.mjs",
+    "powerbatch": "node .antigravity/powerbatch.mjs verify",
+    "verify:guardrails": "node .antigravity/powerbatch.mjs audit-guardrails",
+    "verify:ui": "node .antigravity/powerbatch.mjs verify-ui-tokens",
+    "verify:vercel": "node .antigravity/powerbatch.mjs verify-vercel",
+    "build": "node .antigravity/powerbatch.mjs verify"
+  },
+  "keywords": [
+    "antigravity",
+    "vibecoding",
+    "powerbatch",
+    "vercel",
+    "white-ui"
+  ],
+  "license": "MIT"
+}
+

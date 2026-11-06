@@ -1,0 +1,81 @@
+{
+  "$schema": "https://antigravity.dev/schemas/config.v2.json",
+  "project": {
+    "name": "my-vibecode-app",
+    "version": "1.0.0",
+    "framework": "vercel-web-app",
+    "uiTheme": {
+      "mode": "light",
+      "primaryBackground": "#FFFFFF",
+      "secondaryBackground": "#F8FAFC",
+      "surfaceBackground": "#FFFFFF",
+      "textPrimary": "#0F172A",
+      "textSecondary": "#475569",
+      "border": "#E2E8F0",
+      "accent": "#000000",
+      "accentBlue": "#2563EB"
+    }
+  },
+  "sandbox": {
+    "port": 3000,
+    "timeoutMs": 30000,
+    "hotReload": true,
+    "autoSelfHeal": true,
+    "maxHealRetries": 3
+  },
+  "powerbatch": {
+    "enabled": true,
+    "concurrency": 4,
+    "mode": "atomic-sequential-verify",
+    "batchSizeLimit": 5,
+    "stopOnFirstFailure": true,
+    "autoCheckpointBranchPrefix": "vibe-feature-",
+    "reportPath": ".antigravity/powerbatch-report.json",
+    "windowsShellWrapper": "cmd.exe /c"
+  },
+  "vercel": {
+    "enabled": true,
+    "autoPreviewDeploy": true,
+    "productionBranch": "main",
+    "previewCommentFeedback": true,
+    "edgeConfig": false,
+    "regions": ["sin1", "hnd1"]
+  },
+  "contextAnchors": [
+    "docs/architecture.md",
+    "docs/roadmap.md",
+    ".antigravity/system_prompt.md",
+    "vercel.json",
+    "src/index.html",
+    "src/styles.css",
+    "src/app.js"
+  ],
+  "guardrails": {
+    "commandWhitelist": [
+      "node",
+      "npm.cmd",
+      "npx.cmd",
+      "pnpm.cmd",
+      "git",
+      "vercel",
+      "powerbatch"
+    ],
+    "blockedPatterns": [
+      "rm -rf",
+      "Remove-Item -Recurse -Force /",
+      "format ",
+      "git push --force",
+      "git push -f origin main",
+      "del /f /s /q C:\\"
+    ],
+    "secretFilesProtected": [
+      ".env",
+      ".env.local",
+      ".env.production",
+      ".vercel/.env*"
+    ],
+    "requireHumanInTheLoopForSecrets": true,
+    "gitCheckpointBeforeRefactor": true
+  }
+}
+

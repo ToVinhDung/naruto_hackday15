@@ -1,0 +1,1182 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VibeEscrow — Hệ thống Giao dịch Ký quỹ Thông minh (Client • Freelancer • Arbiter)</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- ======================================================================
+         1. THANH BAR LỀ TRÊN (TOPBAR): Bấm vào AI Agents (cạnh Guardrails) hiện 4 Tầng
+         ====================================================================== -->
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
+          <div class="brand-mark">VE</div>
+          <div>
+            <div class="brand-title">VibeEscrow Smart Custody</div>
+            <div class="brand-subtitle">Multi-Sig 2-of-3 • Segregated Vault • Dynamic API</div>
+          </div>
+        </div>
+
+        <div class="topbar-actions">
+          <button type="button" class="btn-system-details" id="btn-open-ai-agents-modal" style="background:var(--accent-purple-soft);color:var(--accent-purple);border-color:#DDD6FE;">
+            🤖 AI Agents (4 Tầng)
+          </button>
+          <button type="button" class="btn-system-details" id="btn-open-guardrails-shortcut" style="background:var(--accent-amber-soft);color:#B45309;border-color:#FDE68A;">
+            🛡️ Guardrails: 5/5 Active
+          </button>
+          <span class="pill pill-emerald">
+            <span class="dot dot-emerald"></span>
+            PowerBatch: 4/4 Verified
+          </span>
+          <span class="pill pill-blue">
+            <span class="dot dot-blue"></span>
+            ▲ Vercel Preview: Ready
+          </span>
+          <button type="button" class="btn-system-details" id="btn-open-system-modal">
+            ⚙ Chi tiết hệ thống
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- ======================================================================
+         2. THANH CHỈ SỐ TÀI CHÍNH & CHUYỂN ĐỔI 3 TRẠNG THÁI ĐĂNG NHẬP VAI TRÒ
+         ====================================================================== -->
+    <section class="finance-strip">
+      <div class="finance-bar-inner">
+        <div class="wallet-kpi-grid">
+          <div class="wallet-card" id="wallet-card-client">
+            <div class="wallet-card-header">
+              <span>Ví Client (Buyer)</span>
+              <span class="pill pill-blue">FIAT/WEB3</span>
+            </div>
+            <div class="wallet-card-amount" id="kpi-client-balance">15.000.000 ₫</div>
+          </div>
+
+          <div class="wallet-card">
+            <div class="wallet-card-header">
+              <span>Smart Vault Khóa</span>
+              <span class="pill pill-amber" id="kpi-escrow-count">3 Hợp đồng</span>
+            </div>
+            <div class="wallet-card-amount" id="kpi-escrow-locked">11.000.000 ₫</div>
+          </div>
+
+          <div class="wallet-card" id="wallet-card-freelancer" hidden>
+            <div class="wallet-card-header">
+              <span>Ví Freelancer (Net)</span>
+              <span class="pill pill-emerald">SELLER</span>
+            </div>
+            <div class="wallet-card-amount" id="kpi-freelancer-balance">8.450.000 ₫</div>
+          </div>
+
+          <div class="wallet-card">
+            <div class="wallet-card-header">
+              <span>Quỹ Đóng băng</span>
+              <span class="pill pill-rose" id="kpi-disputed-count">1 Tranh chấp</span>
+            </div>
+            <div class="wallet-card-amount" id="kpi-disputed-amount">3.000.000 ₫</div>
+          </div>
+
+          <div class="wallet-card">
+            <div class="wallet-card-header">
+              <span>Phí Sàn &amp; Gas (2%)</span>
+              <span class="pill pill-purple">AUTO FEE</span>
+            </div>
+            <div class="wallet-card-amount" id="kpi-platform-fees">320.000 ₫</div>
+          </div>
+        </div>
+
+        <!-- 3 TRẠNG THÁI ĐĂNG NHẬP VAI TRÒ (Client • Freelancer • Arbiter) -->
+        <div class="auth-role-switcher" role="tablist" aria-label="Trạng thái đăng nhập vai trò">
+          <span class="auth-label">🔑 VAI TRÒ:</span>
+          <button type="button" class="auth-role-btn active" data-login-role="client" id="login-btn-client">
+            👤 Client (Buyer)
+          </button>
+          <button type="button" class="auth-role-btn" data-login-role="freelancer" id="login-btn-freelancer">
+            💻 Freelancer (Seller)
+          </button>
+          <button type="button" class="auth-role-btn" data-login-role="arbiter" id="login-btn-arbiter">
+            ⚖️ Arbiter (Trọng tài)
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================================================================
+         3. VÙNG LÀM VIỆC CHÍNH (Gọn gàng, bỏ các ghi chú thừa, không hiện tầng AI ở vùng)
+         ====================================================================== -->
+    <main class="workspace-main">
+      <div class="role-session-banner">
+        <div style="display:flex;align-items:center;gap:0.65rem;">
+          <span class="pill pill-blue" id="active-session-badge">👤 CLIENT (BUYER)</span>
+          <span class="pill pill-mono" id="api-sync-indicator">● API Live Sync</span>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-back-to-3-buttons" hidden>
+          ← Quay lại
+        </button>
+      </div>
+
+      <!-- ======================================================================
+           VÙNG CHO THÔNG BÁO ĐỂ DUYỆT TIỀN NẠP VÀO (VietQR Pro 24/7)
+           ====================================================================== -->
+      <section class="topup-notification-zone" id="topup-notification-zone" aria-label="Vùng thông báo duyệt tiền nạp vào">
+        <div class="topup-notification-header">
+          <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+            <span style="font-size:1.15rem;">🔔</span>
+            <strong style="font-size:0.92rem;color:var(--text-primary);">
+              VÙNG THÔNG BÁO DUYỆT TIỀN NẠP VÀO (VietQR Pro 24/7)
+            </strong>
+            <span class="topup-pulse-badge" id="notify-zone-count-badge">0 thông báo</span>
+            <span class="pill pill-blue">MB Bank: 0898143615 • TO VINH DUNG</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:0.4rem;">
+            <button type="button" class="btn btn-secondary btn-xs" id="btn-toggle-notify-body">
+              Thu gọn ▲
+            </button>
+          </div>
+        </div>
+
+        <div id="topup-notification-body" style="margin-top:0.6rem;">
+          <div id="topup-notification-role-hint" style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:0.5rem;"></div>
+          <div id="topup-notification-items-container"></div>
+          <div id="topup-notification-feedback" class="alert-box" style="margin-top:0.5rem;" hidden></div>
+        </div>
+      </section>
+
+      <!-- TRẠNG THÁI A: 3 NÚT VÙNG CHÍNH -->
+      <div class="zone-launcher-grid" id="zone-launcher-grid" data-zone-group="launcher"></div>
+
+      <!-- TRẠNG THÁI B: MÀN HÌNH TOÀN VÙNG -->
+      <section class="fullscreen-zone-stage" id="fullscreen-zone-stage" hidden>
+        <div class="fullscreen-stage-header">
+          <div style="display:flex;align-items:center;gap:0.65rem;">
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-stage-back">
+              ← Quay lại
+            </button>
+            <h2 style="font-size:0.98rem;font-weight:800;" id="fullscreen-stage-title">
+              Quản lý Giao dịch &amp; Smart Vault
+            </h2>
+          </div>
+          <div style="display:flex;gap:0.4rem;flex-wrap:wrap;" id="fullscreen-quick-zone-tabs"></div>
+        </div>
+
+        <div class="fullscreen-stage-body">
+          <!-- ================================================================
+               NỘI DUNG 3 VÙNG CỦA VAI TRÒ CLIENT (BUYER)
+               ================================================================ -->
+          <!-- CLIENT VÙNG 1: Danh sách Hợp đồng & Giao dịch -->
+          <div class="zone-content-view" id="view-client-zone-1" hidden>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+              <strong style="font-size:0.88rem;">Danh sách Hợp đồng Ký quỹ</strong>
+              <button type="button" class="btn btn-primary btn-sm" id="btn-jump-new-contract">
+                + Tạo hợp đồng mới
+              </button>
+            </div>
+            <div class="fullscreen-content-grid" id="client-contracts-list"></div>
+          </div>
+
+          <!-- CLIENT VÙNG 2: Nạp Quỹ Đa Phương thức (> 10.000đ) -->
+          <div class="zone-content-view" id="view-client-zone-2" hidden>
+            <div class="fullscreen-form-container" style="max-width:920px;">
+              <div style="font-size:0.95rem;font-weight:800;margin-bottom:0.75rem;">
+                💳 Nạp Quỹ vào Segregated Vault (&gt; 10.000đ • VietQR &amp; Stablecoin)
+              </div>
+
+              <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));gap:1.25rem;align-items:start;">
+                <!-- THẺ ẢNH VIETQR HỆ THỐNG NHẬN TIỀN -->
+                <div style="background:#F8FAFC;border:1px solid var(--border-color);border-radius:var(--radius-md);padding:0.9rem;text-align:center;">
+                  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.45rem;">
+                    <span style="font-size:0.82rem;font-weight:800;color:var(--text-primary);">📱 Mã VietQR Nạp Quỹ Hệ Thống</span>
+                    <span class="pill pill-blue">MB Quân Đội</span>
+                  </div>
+                  <div style="display:flex;justify-content:center;margin:0.35rem 0;">
+                    <img src="./vietqr.jpg" alt="VietQR MB TO VINH DUNG 0898143615" style="width:100%;max-width:210px;height:auto;border-radius:var(--radius-sm);border:1px solid #E2E8F0;box-shadow:var(--shadow-sm);" />
+                  </div>
+                  <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-radius:var(--radius-sm);padding:0.55rem 0.75rem;font-size:0.76rem;line-height:1.6;text-align:left;margin-top:0.45rem;">
+                    <div>🏦 Ngân hàng: <strong>MB (Ngân hàng TMCP Quân Đội)</strong></div>
+                    <div>👤 Chủ tài khoản: <strong>TO VINH DUNG</strong></div>
+                    <div>🔢 Số tài khoản / SĐT: <strong style="font-family:var(--font-mono);font-size:0.88rem;color:var(--accent-blue);">0898143615</strong></div>
+                    <div>📝 Cú pháp chuyển khoản: <strong style="font-family:var(--font-mono);color:var(--accent-purple);">NAP ESCROW [MÃ_LỆNH]</strong></div>
+                  </div>
+                  <div style="font-size:0.72rem;color:#D97706;margin-top:0.45rem;line-height:1.45;text-align:left;">
+                    ⚠️ <em>Quý khách quét mã VietQR và chuyển khoản. Sau khi chuyển, lệnh sẽ được gửi tới Trọng tài (Arbiter). Tiền sẽ được nạp vào ví ngay khi Arbiter xác nhận biến động số dư.</em>
+                  </div>
+                </div>
+
+                <!-- FORM NẠP TIỀN -->
+                <div>
+                  <form id="topup-form" novalidate>
+                    <div class="form-group">
+                      <label class="form-label" for="topup-account-input">Số tài khoản ngân hàng / Địa chỉ ví nguồn của bạn</label>
+                      <input
+                        type="text"
+                        id="topup-account-input"
+                        class="form-input"
+                        placeholder="Nhập số tài khoản hoặc địa chỉ ví..."
+                        value="19036888999012 - Techcombank (Client Corp)"
+                      />
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label" for="topup-method">Kênh thanh toán</label>
+                      <select id="topup-method" class="form-select">
+                        <option value="VietQR Pro 24/7 (Fiat - 0% Fee)">VietQR Pro 24/7 (MB - TO VINH DUNG)</option>
+                        <option value="USDC Stablecoin (ERC-20 / Base)">USDC Stablecoin (Web3 Vault)</option>
+                        <option value="USDT Tether (TRC-20 / Arbitrum)">USDT Tether (Web3 Vault)</option>
+                        <option value="Thẻ Quốc tế Visa / Mastercard">Thẻ Quốc tế Visa / Mastercard</option>
+                        <option value="Ví điện tử VibePay">Ví điện tử VibePay</option>
+                      </select>
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label" for="topup-amount">Số tiền nạp (VNĐ)</label>
+                      <input
+                        type="number"
+                        id="topup-amount"
+                        class="form-input"
+                        value="1000000"
+                        min="0"
+                        step="50000"
+                      />
+                    </div>
+                    <div class="preset-row">
+                      <button type="button" class="btn btn-secondary btn-xs" data-preset-amount="5000">
+                        5.000 ₫ (Thử nghiệm)
+                      </button>
+                      <button type="button" class="btn btn-secondary btn-xs" data-preset-amount="500000">
+                        +500.000 ₫
+                      </button>
+                      <button type="button" class="btn btn-secondary btn-xs" data-preset-amount="2000000">
+                        +2.000.000 ₫
+                      </button>
+                      <button type="button" class="btn btn-secondary btn-xs" data-preset-amount="5000000">
+                        +5.000.000 ₫
+                      </button>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-block">
+                      Nạp vào Segregated Vault
+                    </button>
+                    <div id="topup-feedback" class="alert-box" hidden></div>
+                  </form>
+                </div>
+              </div>
+
+              <!-- DANH SÁCH LỆNH NẠP TIỀN CỦA CLIENT (CHỜ ARBITER DUYỆT) -->
+              <div style="margin-top:1.15rem;border-top:1px solid var(--border-color);padding-top:0.85rem;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.45rem;">
+                  <div style="font-size:0.86rem;font-weight:800;color:var(--text-primary);">
+                    📋 Lịch sử Lệnh Nạp Tiền &amp; Trạng thái Xác nhận từ Arbiter
+                  </div>
+                  <span class="pill pill-blue" id="client-topups-count-badge">0 lệnh</span>
+                </div>
+                <div id="client-topups-history-list" class="contract-subbox" style="background:#FFFFFF;max-height:220px;overflow-y:auto;"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- CLIENT VÙNG 3: Khởi tạo Hợp đồng (Có nút Tạo hợp đồng mới bên cạnh & Mã hợp đồng) -->
+          <div class="zone-content-view" id="view-client-zone-3" hidden>
+            <div class="fullscreen-form-container">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;gap:0.5rem;flex-wrap:wrap;">
+                <div style="font-size:0.95rem;font-weight:800;">
+                  ✍️ Khởi tạo Hợp đồng Mới, Chia Milestone &amp; Ký kết Số
+                </div>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-new-contract-beside">
+                  + Tạo hợp đồng mới
+                </button>
+              </div>
+              <form id="create-contract-form" novalidate>
+                <div class="form-row-2">
+                  <div class="form-group">
+                    <label class="form-label" for="contract-code-input">Mã hợp đồng (Contract Code)</label>
+                    <input
+                      type="text"
+                      id="contract-code-input"
+                      class="form-input"
+                      style="font-family:var(--font-mono);font-weight:700;"
+                      value="ESC-104"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="contract-title-input">Tên hợp đồng / Mô tả yêu cầu</label>
+                    <input
+                      type="text"
+                      id="contract-title-input"
+                      class="form-input"
+                      placeholder="Nhập tên hợp đồng có ý nghĩa (ví dụ: Phát triển API thanh toán VietQR)..."
+                      value="Phát triển API thanh toán VietQR &amp; Cổng Escrow"
+                    />
+                  </div>
+                </div>
+                <div class="form-row-2">
+                  <div class="form-group">
+                    <label class="form-label" for="contract-freelancer-input">Seller / Freelancer</label>
+                    <select id="contract-freelancer-input" class="form-select">
+                      <option value="Minh Tuấn (Fullstack Dev)">Minh Tuấn (Fullstack Dev)</option>
+                      <option value="Lan Anh (Product Designer)">Lan Anh (Product Designer)</option>
+                      <option value="Hoàng Nam (AI Engineer)">Hoàng Nam (AI Engineer)</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="contract-amount-input">Ngân sách Khóa Vault (VNĐ)</label>
+                    <input
+                      type="number"
+                      id="contract-amount-input"
+                      class="form-input"
+                      value="3000000"
+                      min="20000"
+                      step="100000"
+                    />
+                  </div>
+                </div>
+                <div class="form-row-2">
+                  <div class="form-group">
+                    <label class="form-label" for="contract-milestones-input">Chia nhỏ Cột mốc (Milestones)</label>
+                    <select id="contract-milestones-input" class="form-select">
+                      <option value="2">2 Đợt (M1: 40% • M2: 60%)</option>
+                      <option value="3">3 Đợt (M1: 30% • M2: 40% • M3: 30%)</option>
+                      <option value="1">1 Đợt (100%)</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="contract-inspection-input">Cửa sổ Kiểm tra &amp; Giới hạn Sửa</label>
+                    <select id="contract-inspection-input" class="form-select">
+                      <option value="3|3">3 ngày (Auto-Release) • Tối đa 3 lần sửa</option>
+                      <option value="5|2">5 ngày (Auto-Release) • Tối đa 2 lần sửa</option>
+                      <option value="7|5">7 ngày (Auto-Release) • Tối đa 5 lần sửa</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="form-row-2">
+                  <div class="form-group">
+                    <label class="form-label" for="contract-criteria-input">Tiêu chí Nghiệm thu</label>
+                    <input
+                      type="text"
+                      id="contract-criteria-input"
+                      class="form-input"
+                      value="Làm web đẹp, mượt"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="contract-sig-input">Chữ ký Đồng thuận</label>
+                    <select id="contract-sig-input" class="form-select">
+                      <option value="EIP-712 Wallet Sig">Web3: Ví EIP-712</option>
+                      <option value="DocuSign / OTP e-Sign">Web2: OTP / DocuSign</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="fee-preview-box" id="contract-fee-preview">
+                  <div class="fee-preview-row">
+                    <span>Gross Khóa Vault / Phí 2% + Gas:</span>
+                    <span><strong id="preview-gross">3.000.000 ₫</strong> (Phí: <strong id="preview-fee">65.000 ₫</strong>)</span>
+                  </div>
+                  <div class="fee-preview-row">
+                    <span>Thực nhận dự kiến cho Freelancer (Net Payout):</span>
+                    <strong style="color:var(--accent-emerald);" id="preview-net">2.935.000 ₫</strong>
+                  </div>
+                </div>
+                <div style="display:flex;gap:0.6rem;">
+                  <button type="submit" class="btn btn-primary" style="flex:1;">
+                    ✍️ Ký kết &amp; Khóa Tiền vào Multi-Sig Vault
+                  </button>
+                  <button type="button" class="btn btn-secondary" id="btn-reset-new-contract">
+                    + Tạo hợp đồng mới
+                  </button>
+                </div>
+                <div id="client-contract-feedback" class="alert-box" hidden></div>
+
+                <!-- Hộp thông báo & khuyến nghị của Agent (CHỈ HIỆN KHI BƯỚC KIỂM TRA TIÊU CHÍ KHÔNG PASS) -->
+                <div id="client-agent-failure-box" class="alert-box alert-error" style="margin-top:0.65rem;" hidden></div>
+              </form>
+            </div>
+          </div>
+
+          <!-- ================================================================
+               NỘI DUNG 3 VÙNG CỦA VAI TRÒ FREELANCER (SELLER)
+               ================================================================ -->
+          <!-- FREELANCER VÙNG 1: Nộp Bàn giao (Chỉ hiện thông báo & khuyến nghị của Agent khi chạy không pass) -->
+          <div class="zone-content-view" id="view-freelancer-zone-1" hidden>
+            <div class="fullscreen-form-container">
+              <div style="font-size:0.95rem;font-weight:800;margin-bottom:0.75rem;">
+                📤 Nộp Bàn giao Sản phẩm (Git PR / Commit / Figma)
+              </div>
+              <form id="freelancer-submit-form" novalidate>
+                <div class="form-group">
+                  <label class="form-label" for="freelancer-contract-select">Chọn Hợp đồng bàn giao</label>
+                  <select id="freelancer-contract-select" class="form-select"></select>
+                </div>
+
+                <!-- HỘP HIỂN THỊ MÔ TẢ YÊU CẦU SỬA ĐỔI TỪ CLIENT CHO FREELANCER -->
+                <div id="freelancer-contract-revision-box" class="alert-box alert-warning" style="margin-bottom:0.75rem;" hidden></div>
+
+                <div class="form-row-2">
+                  <div class="form-group">
+                    <label class="form-label" for="freelancer-deliverable-url">Link GitHub (Repository / PR / Commit)</label>
+                    <input
+                      type="text"
+                      id="freelancer-deliverable-url"
+                      class="form-input"
+                      placeholder="https://github.com/owner/repo hoặc https://github.com/owner/repo/pull/42"
+                      value="https://github.com/vibecode/app/pull/42"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="freelancer-commit-input">Git Commit Hash</label>
+                    <input
+                      type="text"
+                      id="freelancer-commit-input"
+                      class="form-input"
+                      value="commit#9f8c2a1"
+                    />
+                  </div>
+                </div>
+                <div class="form-row-2">
+                  <div class="form-group">
+                    <label class="form-label" for="freelancer-sim-scenario">Trạng thái Kiểm thử Tự động khi nộp</label>
+                    <select id="freelancer-sim-scenario" class="form-select">
+                      <option value="PASS_100">✓ Vượt qua toàn bộ kiểm thử (Pass 100%)</option>
+                      <option value="FAIL_PAYMENT_500">✖ Không Pass: Lỗi 500 tại /api/payment khi test input âm</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="freelancer-deliverable-note">Biên bản bàn giao</label>
+                    <input
+                      type="text"
+                      id="freelancer-deliverable-note"
+                      class="form-input"
+                      value="Đã hoàn tất 5 màn hình Figma và API thanh toán."
+                    />
+                  </div>
+                </div>
+                <button type="submit" class="btn btn-emerald btn-block">
+                  📤 Gửi Bàn giao &amp; Kiểm tra Nghiệm thu
+                </button>
+                <div id="freelancer-submit-feedback" class="alert-box" hidden></div>
+
+                <!-- Hộp thông báo & khuyến nghị của Agent (CHỈ HIỆN KHI CÓ BƯỚC KHÔNG PASS) -->
+                <div id="freelancer-agent-failure-box" class="alert-box alert-error" style="margin-top:0.65rem;" hidden></div>
+              </form>
+            </div>
+          </div>
+
+          <!-- FREELANCER VÙNG 2: Danh sách Hợp đồng đảm nhận & Ký Multi-Sig -->
+          <div class="zone-content-view" id="view-freelancer-zone-2" hidden>
+            <div class="fullscreen-content-grid" id="freelancer-contracts-list"></div>
+          </div>
+
+          <!-- FREELANCER VÙNG 3: Rút Thù lao Đa Phương thức -->
+          <div class="zone-content-view" id="view-freelancer-zone-3" hidden>
+            <div class="fullscreen-form-container">
+              <div style="font-size:0.95rem;font-weight:800;margin-bottom:0.75rem;">
+                🏦 Rút Thù lao Đa Phương thức (Ngân hàng Nội địa / Ví USDC-USDT)
+              </div>
+              <form id="freelancer-withdraw-form" novalidate>
+                <div class="form-row-2">
+                  <div class="form-group">
+                    <label class="form-label" for="freelancer-withdraw-account">Số tài khoản nhận tiền / Địa chỉ ví</label>
+                    <input
+                      type="text"
+                      id="freelancer-withdraw-account"
+                      class="form-input"
+                      placeholder="Nhập số tài khoản ngân hàng hoặc địa chỉ ví..."
+                      value="19038889990001 - Nguyễn Minh Tuấn"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="freelancer-withdraw-channel">Kênh nhận tiền (Fiat / Web3 Wallet)</label>
+                    <select id="freelancer-withdraw-channel" class="form-select">
+                      <option value="Techcombank 24/7 (Fiat)">Techcombank 24/7 (Fiat)</option>
+                      <option value="Ví Web3 USDC (Base/Polygon)">Ví Web3 USDC (Base/Polygon)</option>
+                      <option value="Ví Web3 USDT (TRC-20)">Ví Web3 USDT (TRC-20)</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="freelancer-withdraw-amount">Số tiền muốn rút (VNĐ, &gt; 10.000đ)</label>
+                  <input
+                    type="number"
+                    id="freelancer-withdraw-amount"
+                    class="form-input"
+                    value="2000000"
+                    min="20000"
+                    step="100000"
+                  />
+                </div>
+                <button type="submit" class="btn btn-primary btn-block">
+                  🏦 Rút tiền Thù lao Khả dụng
+                </button>
+                <div id="freelancer-withdraw-feedback" class="alert-box" hidden></div>
+              </form>
+            </div>
+          </div>
+
+          <!-- ================================================================
+               NỘI DUNG 3 VÙNG CỦA VAI TRÒ ARBITER (TRỌNG TÀI)
+               ================================================================ -->
+          <!-- ARBITER VÙNG 1: Phân xử Tranh chấp & Chia Tỷ lệ Linh hoạt -->
+          <div class="zone-content-view" id="view-arbiter-zone-1" hidden>
+            <div class="fullscreen-content-grid" id="arbiter-disputes-list"></div>
+            <div id="arbiter-feedback" class="alert-box" hidden></div>
+          </div>
+
+          <!-- ARBITER VÙNG 2: Cổng Chứng cứ Đối chứng & Giám sát Toàn bộ Giao dịch -->
+          <div class="zone-content-view" id="view-arbiter-zone-2" hidden>
+            <!-- KHU VỰC ARBITER DUYỆT LỆNH NẠP TIỀN VIETQR (CẦN XÁC NHẬN TIỀN MỚI VÀO HỆ THỐNG) -->
+            <div style="margin-bottom:1.15rem;background:#FFFFFF;border:1px solid var(--border-color);border-radius:var(--radius-md);padding:0.95rem;box-shadow:var(--shadow-sm);">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.45rem;flex-wrap:wrap;gap:0.4rem;">
+                <div style="display:flex;align-items:center;gap:0.5rem;">
+                  <strong style="font-size:0.92rem;color:var(--text-primary);">
+                    📱 Duyệt Lệnh Nạp Tiền VietQR (Arbiter xác nhận tiền mới vào hệ thống)
+                  </strong>
+                  <span class="pill pill-blue">MB: 0898143615 • TO VINH DUNG</span>
+                </div>
+                <span class="pill pill-amber" id="arbiter-pending-topups-count-badge">0 lệnh chờ duyệt</span>
+              </div>
+              <div style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:0.65rem;">
+                Khi Client nạp tiền qua mã VietQR, tiền sẽ được tạm giữ chờ duyệt. Arbiter đối soát biến động số dư tài khoản MB và nhấn <strong>Xác nhận</strong> thì tiền mới chính thức được ghi có vào Segregated Vault của Client.
+              </div>
+              <div id="arbiter-pending-topups-list" class="fullscreen-content-grid" style="max-height:280px;overflow-y:auto;"></div>
+              <div id="arbiter-topup-feedback" class="alert-box" style="margin-top:0.5rem;" hidden></div>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 1.2fr;gap:1.25rem;">
+              <div class="fullscreen-form-container" style="margin:0;">
+                <div style="font-size:0.9rem;font-weight:800;margin-bottom:0.65rem;">
+                  📎 Cổng Thu thập Chứng cứ (Evidence Portal)
+                </div>
+                <form id="evidence-upload-form" novalidate>
+                  <div class="form-group">
+                    <label class="form-label" for="evidence-contract-select">Hợp đồng liên quan</label>
+                    <select id="evidence-contract-select" class="form-select"></select>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="evidence-actor-select">Bên gửi bằng chứng</label>
+                    <select id="evidence-actor-select" class="form-select">
+                      <option value="CLIENT (Buyer)">CLIENT (Buyer)</option>
+                      <option value="FREELANCER (Seller)">FREELANCER (Seller)</option>
+                      <option value="ARBITER (Inspector)">ARBITER (Trọng tài)</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="evidence-file-input">Đính kèm File từ máy tính (Ảnh, PDF, Log, ZIP...)</label>
+                    <input type="file" id="evidence-file-input" class="form-input" />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="evidence-content-input">Mô tả chứng cứ / Link Log hệ thống</label>
+                    <input
+                      type="text"
+                      id="evidence-content-input"
+                      class="form-input"
+                      value="Log benchmark Vercel Edge: p95 latency = 142ms (Đạt chuẩn SLA < 200ms)"
+                    />
+                  </div>
+                  <button type="submit" class="btn btn-primary btn-block">
+                    📎 Đính kèm Chứng cứ vào Hồ sơ
+                  </button>
+                  <div id="evidence-feedback" class="alert-box" hidden></div>
+                </form>
+              </div>
+              <div>
+                <div style="font-size:0.88rem;font-weight:800;margin-bottom:0.65rem;">
+                  🔍 Giám sát Toàn bộ Giao dịch trên Sàn
+                </div>
+                <div class="contract-list" id="arbiter-all-contracts-list"></div>
+              </div>
+            </div>
+
+            <!-- KHO LƯU TRỮ VÀ TẢI FILE BẰNG CHỨNG CHO ARBITER -->
+            <div style="margin-top:1.15rem;">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
+                <div style="font-size:0.88rem;font-weight:800;color:var(--text-primary);">
+                  📁 Kho Lưu trữ &amp; Tải File Bằng chứng Toàn sàn (Arbiter có thể lưu về máy)
+                </div>
+                <span class="pill pill-purple" id="arbiter-evidence-count-badge">0 file</span>
+              </div>
+              <div id="arbiter-all-evidences-list" class="contract-subbox" style="background:#FFFFFF;max-height:280px;overflow-y:auto;"></div>
+            </div>
+          </div>
+
+          <!-- ARBITER VÙNG 3: Nhật ký Kiểm toán Bất biến (Audit Trail) & Điểm Tín nhiệm -->
+          <div class="zone-content-view" id="view-arbiter-zone-3" hidden>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+              <h3 style="font-size:0.92rem;font-weight:800;">
+                🔒 Nhật ký Kiểm toán Bất biến &amp; Điểm Tín nhiệm
+              </h3>
+              <span class="pill pill-mono" id="ledger-count-pill">4 sự kiện</span>
+            </div>
+            <div id="reputation-cards-container" style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.75rem;margin-bottom:0.85rem;"></div>
+            <div class="fullscreen-content-grid" id="transaction-ledger-body"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- ======================================================================
+         4. THANH DOCK DƯỚI CÙNG (BOTTOM DOCK - Tối giản, bỏ ghi chú thừa)
+         ====================================================================== -->
+    <footer class="bottom-dock">
+      <div class="bottom-dock-inner">
+        <div class="reputation-inline">
+          <span>🔒 <strong>Smart Escrow Custody:</strong></span>
+          <span class="pill pill-blue">Multi-Sig 2-of-3</span>
+          <span class="pill pill-emerald">SHA-256 Proof</span>
+          <span class="pill pill-amber">Timelock Auto-Release</span>
+          <span class="pill pill-purple">Split Settlement</span>
+        </div>
+        <div>
+          <span class="pill pill-mono">http://localhost:3000 • API Connected</span>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <!-- ========================================================================
+       POPUP MODAL: ĐĂNG NHẬP ARBITER CẦN MẬT KHẨU (123456)
+       ======================================================================== -->
+  <div class="modal-backdrop" id="arbiter-auth-modal" hidden>
+    <div class="modal-card" style="max-width:390px;background:#FFFFFF;border-radius:var(--radius-md);box-shadow:var(--shadow-lg);border:1px solid var(--border-color);" role="dialog" aria-modal="true" aria-labelledby="arbiter-modal-title">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:1rem 1.2rem;border-bottom:1px solid var(--border-color);">
+        <div>
+          <h3 style="font-size:0.96rem;font-weight:800;color:var(--text-primary);display:flex;align-items:center;gap:0.4rem;" id="arbiter-modal-title">
+            <span>🔒</span> Xác thực Trọng tài (Arbiter)
+          </h3>
+          <div style="font-size:0.75rem;color:var(--text-secondary);margin-top:0.2rem;">
+            Khu vực kiểm soát quỹ &amp; phê duyệt tiền nạp VietQR
+          </div>
+        </div>
+        <button type="button" class="btn btn-secondary btn-xs" id="btn-close-arbiter-auth" aria-label="Đóng">✕</button>
+      </div>
+
+      <div style="padding:1.15rem 1.2rem;">
+        <form id="arbiter-auth-form" novalidate>
+          <div class="form-group" style="margin-bottom:0.85rem;">
+            <label class="form-label" for="arbiter-password-input">Mật khẩu Trọng tài (Mặc định: <strong>123456</strong>)</label>
+            <input
+              type="password"
+              id="arbiter-password-input"
+              class="form-input"
+              placeholder="Nhập 123456"
+              autocomplete="current-password"
+              required
+            />
+          </div>
+          <div id="arbiter-auth-error" class="alert-box alert-error" style="margin-bottom:0.85rem;font-size:0.78rem;" hidden></div>
+          <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-cancel-arbiter-auth">Hủy</button>
+            <button type="submit" class="btn btn-primary btn-sm" id="btn-submit-arbiter-auth" style="font-weight:700;">
+              Xác nhận Đăng nhập
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       POPUP MODAL 1: CHI TIẾT GIAO DỊCH & UPLOAD FILE BẰNG CHỨNG
+       (Chỉ hiện thông báo/khuyến nghị của Agent nếu giao dịch có bước không pass hoặc đang tranh chấp)
+       ======================================================================== -->
+  <div class="modal-backdrop" id="transaction-detail-modal" hidden>
+    <div class="modal-card modal-card-lg" role="dialog" aria-modal="true" aria-labelledby="tx-modal-title">
+      <div class="modal-xl-header">
+        <div>
+          <div style="display:flex;align-items:center;gap:0.5rem;">
+            <span class="pill pill-mono" id="tx-modal-id">ESC-103</span>
+            <span id="tx-modal-status-badge"></span>
+            <span class="pill pill-blue" id="tx-modal-viewer-role">CLIENT</span>
+          </div>
+          <div style="font-size:1.02rem;font-weight:800;margin-top:0.25rem;" id="tx-modal-title">
+            Chi tiết Hợp đồng Giao dịch Ký quỹ
+          </div>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-close-tx-modal">
+          ✕ Đóng (ESC)
+        </button>
+      </div>
+
+      <div class="modal-xl-body">
+        <div id="tx-modal-overview"></div>
+
+        <div id="tx-modal-role-actions" style="margin:0.85rem 0;"></div>
+
+        <!-- CỔNG UPLOAD FILE BẰNG CHỨP TRANH CHẤP -->
+        <div class="evidence-upload-zone" id="tx-modal-evidence-zone">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem;flex-wrap:wrap;gap:0.4rem;">
+            <strong style="font-size:0.86rem;color:var(--text-primary);">
+              📎 File Bằng chứng Tranh chấp (Gửi tới Arbiter)
+            </strong>
+            <span class="pill pill-purple" id="tx-modal-evidence-count">0 File bằng chứng</span>
+          </div>
+
+          <form id="popup-evidence-file-form" novalidate style="background:#FFFFFF;padding:0.75rem;border:1px solid var(--border-color);border-radius:var(--radius-sm);">
+            <div class="form-row-2">
+              <div class="form-group" style="margin-bottom:0.45rem;">
+                <label class="form-label" for="popup-evidence-file-input">Chọn File Bằng chứng (Ảnh, PDF, Log, ZIP...)</label>
+                <input
+                  type="file"
+                  id="popup-evidence-file-input"
+                  class="form-input"
+                  multiple
+                />
+              </div>
+              <div class="form-group" style="margin-bottom:0.45rem;">
+                <label class="form-label" for="popup-evidence-note-input">Lời giải trình gửi Arbiter</label>
+                <input
+                  type="text"
+                  id="popup-evidence-note-input"
+                  class="form-input"
+                  placeholder="Nhập giải trình đính kèm file bằng chứng..."
+                  value="Đính kèm file chụp kết quả đo kiểm & biên bản bàn giao thực tế."
+                />
+              </div>
+            </div>
+            <button type="submit" class="btn btn-primary btn-sm" id="btn-submit-popup-evidence">
+              📤 Tải File Bằng chứng lên Hồ sơ
+            </button>
+            <div id="popup-evidence-feedback" class="alert-box" hidden></div>
+          </form>
+
+          <div id="tx-modal-evidence-list" style="margin-top:0.65rem;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       POPUP MODAL 2: XÁC NHẬN NẠP TIỀN QUA MÃ VIETQR CỦA HỆ THỐNG
+       ======================================================================== -->
+  <div class="modal-backdrop" id="confirm-modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title" style="max-width:540px;max-height:92vh;overflow-y:auto;padding:1.35rem;">
+      <div style="font-size:1.02rem;font-weight:800;margin-bottom:0.25rem;" id="modal-title">
+        📱 Quét mã VietQR Nạp Quỹ vào Hệ thống
+      </div>
+      <div style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:0.75rem;">
+        Quý khách vui lòng quét mã VietQR bên dưới để chuyển khoản. Sau khi chuyển, nhấn xác nhận và chờ Trọng tài (Arbiter) duyệt thì tiền mới vào ví.
+      </div>
+
+      <!-- KHUNG HIỂN THỊ ẢNH VIETQR VÀ THÔNG TIN TÀI KHOẢN MB TO VINH DUNG -->
+      <div style="background:#F8FAFC;border:1px solid var(--border-color);border-radius:var(--radius-md);padding:0.75rem;text-align:center;margin-bottom:0.75rem;">
+        <div style="font-size:0.8rem;font-weight:700;color:var(--text-primary);margin-bottom:0.35rem;">
+          MÃ VIETQR NHẬN TIỀN DUY NHẤT CỦA HỆ THỐNG
+        </div>
+        <div style="display:flex;justify-content:center;margin:0.35rem 0;">
+          <img src="./vietqr.jpg" alt="VietQR MB TO VINH DUNG 0898143615" style="max-width:210px;max-height:300px;object-fit:contain;border-radius:var(--radius-sm);border:1px solid #E2E8F0;box-shadow:var(--shadow-sm);" />
+        </div>
+        <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-radius:var(--radius-sm);padding:0.6rem 0.8rem;font-size:0.78rem;line-height:1.6;text-align:left;margin-top:0.4rem;">
+          <div>🏦 Ngân hàng nhận: <strong>MB (Ngân hàng TMCP Quân Đội)</strong></div>
+          <div>👤 Tên chủ tài khoản: <strong>TO VINH DUNG</strong></div>
+          <div>🔢 Số tài khoản / SĐT: <strong style="font-family:var(--font-mono);font-size:0.88rem;color:var(--accent-blue);">0898143615</strong></div>
+          <div>💵 Số tiền nạp: <strong style="color:var(--accent-emerald);" id="modal-qr-amount">1.000.000 ₫</strong></div>
+          <div>📝 Nội dung chuyển khoản (Memo): <strong style="font-family:var(--font-mono);color:var(--accent-purple);" id="modal-qr-memo">NAP ESCROW TOPUP-102</strong></div>
+        </div>
+      </div>
+
+      <div class="modal-summary">
+        <div class="modal-summary-row">
+          <span style="color:var(--text-secondary);">Tài khoản / Ví gửi của bạn:</span>
+          <strong id="modal-account">19036888999012 - Techcombank</strong>
+        </div>
+        <div class="modal-summary-row">
+          <span style="color:var(--text-secondary);">Số tiền nạp (Gross):</span>
+          <strong id="modal-amount">1.000.000 ₫</strong>
+        </div>
+        <div class="modal-summary-row">
+          <span style="color:var(--text-secondary);">Kênh thanh toán:</span>
+          <strong id="modal-method">VietQR Pro 24/7</strong>
+        </div>
+        <div class="modal-summary-row">
+          <span style="color:var(--text-secondary);">Phí cổng / Gas mạng lưới:</span>
+          <strong id="modal-fee" style="color:var(--accent-emerald);">0 ₫ (Miễn phí)</strong>
+        </div>
+      </div>
+
+      <div style="font-size:0.74rem;color:#D97706;background:#FFFBEB;padding:0.45rem 0.65rem;border-radius:var(--radius-sm);border:1px solid #FDE68A;margin:0.65rem 0;line-height:1.45;">
+        ⚠️ <strong>Quy trình phê duyệt từ Arbiter:</strong> Tiền sẽ được tạm giữ an toàn. Ngay sau khi Trọng tài (Arbiter) xác nhận biến động số dư thành công từ tài khoản MB 0898143615, số tiền sẽ được nạp vào ví của bạn.
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn btn-secondary" id="modal-cancel">Hủy bỏ</button>
+        <button type="button" class="btn btn-primary" id="modal-confirm">✓ Tôi đã chuyển khoản — Gửi Arbiter duyệt</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       POPUP MODAL 3: CỬA SỔ 4 TẦNG AI AGENTS (Mở khi bấm nút "🤖 AI Agents (4 Tầng)" cạnh Guardrails ở lề trên)
+       ======================================================================== -->
+  <div class="modal-backdrop" id="ai-agents-modal" hidden>
+    <div class="modal-card modal-card-xl" role="dialog" aria-modal="true" aria-labelledby="ai-agents-modal-title">
+      <div class="modal-xl-header">
+        <div>
+          <div style="font-size:1rem;font-weight:800;" id="ai-agents-modal-title">
+            🤖 Hệ thống 4 Tầng Agentic AI trong Giao dịch Ký quỹ Thông minh (API Live)
+          </div>
+          <div style="font-size:0.75rem;color:var(--text-secondary);">
+            Tầng 1: Soạn thảo Checklist • Tầng 2: Giao hàng Sandbox • Tầng 3: Nghiệm thu ProofRegistry • Tầng 4: Tranh chấp AI Bailiff
+          </div>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-close-ai-agents-modal">
+          ✕ Đóng cửa sổ (ESC)
+        </button>
+      </div>
+
+      <div class="modal-xl-tabs">
+        <button type="button" class="modal-tab-btn active" data-agent-tab="agent-tab-overview">
+          📋 Bảng Tổng quan 4 Tầng Agent
+        </button>
+        <button type="button" class="modal-tab-btn" data-agent-tab="agent-tab-tier1">
+          1. Tầng Khởi tạo (Scope Decomposer)
+        </button>
+        <button type="button" class="modal-tab-btn" data-agent-tab="agent-tab-tier23">
+          2 &amp; 3. Tầng Thực thi &amp; Nghiệm thu (Sandbox &amp; ProofRegistry)
+        </button>
+        <button type="button" class="modal-tab-btn" data-agent-tab="agent-tab-tier4">
+          4. Tầng Tranh chấp (Fact-finding Bailiff)
+        </button>
+      </div>
+
+      <div class="modal-xl-body">
+        <!-- TAB A: BẢNG TỔNG QUAN 4 TẦNG -->
+        <div data-agent-panel="agent-tab-overview">
+          <table class="guardrail-table">
+            <thead>
+              <tr>
+                <th>Giai đoạn</th>
+                <th>Vai trò của Agentic AI</th>
+                <th>Công cụ Agent sử dụng (Tools)</th>
+                <th>Quyền hạn &amp; Cơ chế Báo cáo</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="pill pill-blue">1. Soạn thảo</span></td>
+                <td><strong>Thư ký phân rã checklist</strong><br/>(Scope Decomposer Agent)</td>
+                <td><code>LLM Parser</code>, <code>JSON Schema Validator</code>, <code>SHA-256 Hasher</code></td>
+                <td><strong>Đề xuất (Cần 2 bên ký):</strong> Tách tiêu chí <em>Deterministic (Khách quan)</em> vs <em>Subjective (Chủ quan)</em> &amp; băm Checklist Hash.</td>
+              </tr>
+              <tr>
+                <td><span class="pill pill-emerald">2. Giao hàng</span></td>
+                <td><strong>Kỹ sư kiểm thử tự động</strong><br/>(Autonomous Verification Pipeline)</td>
+                <td><code>Git API</code>, <code>Docker / Firecracker Sandbox</code>, <code>Test Runners</code>, <code>cURL</code>, <code>Metadata Reader</code></td>
+                <td><strong>Tự động chạy ngầm trong sandbox:</strong> Clone commit, chạy unit/integration test, gọi cURL kiểm tra JSON &amp; đọc metadata Figma.</td>
+              </tr>
+              <tr>
+                <td><span class="pill pill-amber">3. Nghiệm thu</span></td>
+                <td><strong>Giám định viên kỹ thuật</strong><br/>(Proposal &amp; Proof Generation)</td>
+                <td><code>Log Aggregator</code>, <code>Hashing Tool</code>, <code>Oracle Relay (ProofRegistry)</code></td>
+                <td><strong>Chỉ cảnh báo khi có bước không pass:</strong> Ghi <code>Test Report Hash</code> lên ProofRegistry on-chain; gửi khuyến nghị sửa lỗi nếu rớt test.</td>
+              </tr>
+              <tr>
+                <td><span class="pill pill-purple">4. Tranh chấp</span></td>
+                <td><strong>Thừa phát lại trích xuất chứng cứ</strong><br/>(Autonomous Fact-finding Bailiff)</td>
+                <td><code>Audit Trail Reader</code>, <code>Git Diff Analyzer</code>, <code>Scope Creep Detector</code></td>
+                <td><strong>Đề xuất phương án cho trọng tài:</strong> Tổng hợp <em>Dispute Dossier</em> &amp; đề xuất tỷ lệ chia quỹ (65% Seller / 35% Buyer) chờ Trọng tài ký duyệt (HITL).</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- TAB B: CHI TIẾT & CHẠY THỬ API TẦNG 1 -->
+        <div data-agent-panel="agent-tab-tier1" hidden>
+          <div style="display:flex;gap:0.5rem;margin-bottom:0.65rem;">
+            <input
+              type="text"
+              id="modal-tier1-brief-input"
+              class="form-input"
+              value="Làm web bán hàng đẹp, mượt, có cổng thanh toán QR nhanh"
+            />
+            <button type="button" class="btn btn-primary btn-sm" id="btn-modal-run-tier1" style="white-space:nowrap;">
+              ▶ Gọi API /api/agents/scope-decompose
+            </button>
+          </div>
+          <div id="modal-tier1-result-box"></div>
+        </div>
+
+        <!-- TAB C: CHI TIẾT & CHẠY THỬ API TẦNG 2 & 3 -->
+        <div data-agent-panel="agent-tab-tier23" hidden>
+          <div style="display:flex;gap:0.5rem;margin-bottom:0.65rem;">
+            <select id="modal-tier23-scenario" class="form-select">
+              <option value="FAIL_PAYMENT_500">Kịch bản Không Pass: Lỗi 500 tại /api/payment khi test input âm</option>
+              <option value="PASS_100">Kịch bản Pass 100%: Đạt toàn bộ 4/4 tiêu chí Deterministic</option>
+            </select>
+            <button type="button" class="btn btn-primary btn-sm" id="btn-modal-run-tier23" style="white-space:nowrap;">
+              ▶ Gọi API /api/agents/verify-assess
+            </button>
+          </div>
+          <div id="modal-tier23-result-box"></div>
+        </div>
+
+        <!-- TAB D: CHI TIẾT & CHẠY THỬ API TẦNG 4 -->
+        <div data-agent-panel="agent-tab-tier4" hidden>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.65rem;">
+            <span style="font-size:0.82rem;font-weight:700;">Hồ sơ Vụ việc (Dispute Dossier) trích xuất qua API <code>/api/agents/fact-finding</code>:</span>
+            <button type="button" class="btn btn-primary btn-sm" id="btn-modal-run-tier4">
+              ▶ Làm mới Dossier từ API
+            </button>
+          </div>
+          <div id="modal-tier4-result-box"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       POPUP MODAL 4: CHI TIẾT HỆ THỐNG, 5 LỚP GUARDRAILS & POWERBATCH
+       ======================================================================== -->
+  <div class="modal-backdrop" id="system-details-modal" hidden>
+    <div class="modal-card modal-card-xl" role="dialog" aria-modal="true" aria-labelledby="sys-modal-title">
+      <div class="modal-xl-header">
+        <div>
+          <div style="font-size:1rem;font-weight:800;" id="sys-modal-title">
+            ⚙ Thiết kế Hệ thống: Antigravity × 5 Lớp Guardrails × PowerBatch × Vercel
+          </div>
+          <div style="font-size:0.75rem;color:var(--text-secondary);">
+            Sơ đồ kiến trúc hệ thống, đặc tả 5 lớp Guardrails an toàn và kịch bản Self-Healing
+          </div>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-close-system-modal">
+          ✕ Đóng cửa sổ (ESC)
+        </button>
+      </div>
+
+      <div class="modal-xl-tabs">
+        <button type="button" class="modal-tab-btn active" data-sys-tab="tab-guardrails">
+          1. 🛡️ Đặc tả 5 Lớp Guardrails &amp; Trình Kiểm tra
+        </button>
+        <button type="button" class="modal-tab-btn" data-sys-tab="tab-arch">
+          2. Sơ đồ Kiến trúc Hệ thống
+        </button>
+        <button type="button" class="modal-tab-btn" data-sys-tab="tab-powerbatch">
+          3. ⚡ PowerBatch &amp; Self-Healing Simulator
+        </button>
+      </div>
+
+      <div class="modal-xl-body">
+        <!-- TAB 1: GUARDRAILS -->
+        <div id="sys-panel-tab-guardrails" data-sys-panel="tab-guardrails">
+          <div style="font-size:0.86rem;font-weight:800;margin-bottom:0.5rem;">
+            🛡️ Bảng Đặc tả 5 Lớp Guardrails trong Thiết kế Hệ thống
+          </div>
+          <table class="guardrail-table">
+            <thead>
+              <tr>
+                <th>Mã Lớp</th>
+                <th>Tên Lớp Guardrail</th>
+                <th>Quy tắc Kiểm soát Cụ thể</th>
+                <th>Cơ chế Chặn &amp; Phản hồi</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="pill pill-blue">G1</span></td>
+                <td><strong>Terminal Command Whitelist</strong></td>
+                <td>Chỉ cho phép thực thi: <code>node</code>, <code>npm.cmd</code>, <code>pnpm.cmd</code>, <code>git status</code>, <code>vercel</code>, <code>powerbatch.cmd</code>.</td>
+                <td>Chặn tức thì <code>rm -rf</code>, <code>format</code>, <code>del /f /s /q</code>, <code>git push --force</code>.</td>
+              </tr>
+              <tr>
+                <td><span class="pill pill-rose">G2</span></td>
+                <td><strong>Human-in-the-Loop (HITL) cho Secrets</strong></td>
+                <td>Bảo vệ tuyệt đối <code>.env</code>, <code>.env.local</code>, <code>.env.production</code>, <code>sk_live_*</code>, <code>AIza*</code>, Private Keys.</td>
+                <td>Cấm Agent tự động đọc/xuất ra stdout; bắt buộc con người phê duyệt thủ công.</td>
+              </tr>
+              <tr>
+                <td><span class="pill pill-emerald">G3</span></td>
+                <td><strong>Git Checkpoint &amp; Branch Isolation</strong></td>
+                <td>Tự động tạo nhánh <code>vibe-feature-*</code> và commit checkpoint trước khi refactor quy mô lớn.</td>
+                <td>Cấm ghi đè trực tiếp nhánh <code>main</code> khi chưa vượt qua 4/4 batch kiểm thử.</td>
+              </tr>
+              <tr>
+                <td><span class="pill pill-amber">G4</span></td>
+                <td><strong>Escrow Financial &amp; Multi-Sig Guardrail</strong></td>
+                <td>Ràng buộc số tiền <code>&gt; 10.000đ</code> &amp; <code>≤ 500.000.000đ</code>; yêu cầu <code>2-of-3 Multi-Sig</code>; băm bất biến <code>SHA-256 / IPFS</code>.</td>
+                <td>Tự động đóng băng <code>Freeze Vault</code> &amp; khóa Timelock ngay khi có tranh chấp.</td>
+              </tr>
+              <tr>
+                <td><span class="pill pill-purple">G5</span></td>
+                <td><strong>Sandbox Quota &amp; Self-Healing Limit</strong></td>
+                <td>Giới hạn timeout mỗi batch <code>10s–15s</code> và tối đa <code>3 lần</code> tự động vá lỗi liên tiếp.</td>
+                <td>Ngắt vòng lặp vô hạn (chống đốt token) và báo cáo về cho Developer.</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="arch-layout">
+            <div>
+              <div style="font-size:0.8rem;font-weight:700;margin-bottom:0.4rem;">
+                Cấu trúc Thư mục Chuẩn hóa
+              </div>
+              <pre class="tree-box">my-vibecode-app/
+├── .antigravity/
+│   ├── config.json             # Khai báo 5 Lớp Guardrails, PowerBatch &amp; Vercel
+│   ├── agents.json             # Cấu hình 4 Tầng Agentic AI trong luồng Escrow
+│   ├── system_prompt.md        # Agent Directives &amp; White UI Design Tokens
+│   ├── test_commands.json      # 4 Batch tự động (batch-01-guardrails..batch-04)
+│   └── powerbatch.mjs          # Engine kiểm tra Guardrails &amp; xuất JSON Self-Heal
+├── src/
+│   ├── index.html              # Giao diện Ký quỹ + Popup 4 Tầng AI Agents ở Topbar
+│   ├── styles.css              # Tone màu Trắng chủ đạo (#FFFFFF / #F8FAFC)
+│   ├── agents.js               # Logic 4 Tầng Agentic AI (Scope, Sandbox, Proof, Bailiff)
+│   ├── server.mjs              # Dynamic REST API Server (:3000)
+│   └── app.js                  # Kết nối API động &amp; Chỉ báo khuyến nghị khi không pass
+└── tests/
+    └── system.test.mjs         # Bộ kiểm thử tự động xác minh 4 Agents, Guardrails &amp; UI</pre>
+            </div>
+
+            <div>
+              <div style="font-size:0.8rem;font-weight:700;margin-bottom:0.4rem;">
+                Trình Kiểm tra Thực nghiệm Guardrails (Live Sandbox Evaluator)
+              </div>
+              <div class="form-group">
+                <input
+                  type="text"
+                  id="guardrail-cmd-input"
+                  class="form-input"
+                  value=".\powerbatch.cmd verify"
+                />
+              </div>
+              <div class="preset-row">
+                <button type="button" class="btn btn-secondary btn-xs" data-sample-cmd=".\powerbatch.cmd verify">
+                  ✓ [G1] .\powerbatch.cmd verify
+                </button>
+                <button type="button" class="btn btn-secondary btn-xs" data-sample-cmd="vercel --prod">
+                  ✓ [G1] vercel --prod
+                </button>
+                <button type="button" class="btn btn-secondary btn-xs" data-sample-cmd="rm -rf /">
+                  ✖ [G1] rm -rf /
+                </button>
+                <button type="button" class="btn btn-secondary btn-xs" data-sample-cmd="cat .env.production">
+                  ✖ [G2] cat .env.production
+                </button>
+                <button type="button" class="btn btn-secondary btn-xs" data-sample-cmd="git push --force origin main">
+                  ✖ [G3] git push --force main
+                </button>
+              </div>
+              <button type="button" class="btn btn-primary btn-sm" id="guardrail-check-btn">
+                Kiểm tra Lệnh qua Bộ lọc Guardrails
+              </button>
+              <div id="guardrail-result" class="alert-box alert-success">
+                [ALLOWED] Lệnh hợp lệ và nằm trong vùng an toàn (Sandbox Whitelist).
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB 2: SƠ ĐỒ KIẾN TRÚC -->
+        <div id="sys-panel-tab-arch" data-sys-panel="tab-arch" hidden>
+          <div class="arch-layout">
+            <div class="arch-diagram">
+              <button type="button" class="arch-node" data-arch-node="steering">
+                <div class="arch-node-header">
+                  <span class="arch-node-title">[A] Input &amp; Steering Layer</span>
+                  <span class="arch-node-tag">.antigravity/system_prompt.md</span>
+                </div>
+                <div class="arch-node-desc">
+                  Agent Directives, Context Anchors và quy chuẩn White UI Design System (#FFFFFF).
+                </div>
+              </button>
+              <div class="arch-connector">▼</div>
+              <button type="button" class="arch-node" data-arch-node="engine">
+                <div class="arch-node-header">
+                  <span class="arch-node-title">[B] Google Antigravity Engine &amp; 4 Escrow Agents</span>
+                  <span class="arch-node-tag">src/agents.js</span>
+                </div>
+                <div class="arch-node-desc">
+                  Scope Decomposer • Sandbox Verifier • Technical Assessor • Fact-finding Bailiff.
+                </div>
+              </button>
+              <div class="arch-connector">▼ (Kiểm duyệt bắt buộc qua 5 Lớp Guardrails)</div>
+              <button type="button" class="arch-node arch-node-guardrail active" data-arch-node="guardrails">
+                <div class="arch-node-header">
+                  <span class="arch-node-title">[G] 🛡️ Tầng Guardrails &amp; Kiểm soát Rủi ro 5 Lớp (Bắt buộc)</span>
+                  <span class="arch-node-tag">G1..G5 Safety Gate</span>
+                </div>
+                <div class="arch-node-desc">
+                  [G1] Command Whitelist • [G2] Secret .env HITL • [G3] Git Checkpoint vibe-* • [G4] Escrow Multi-Sig 2/3 &amp; Min &gt;10k • [G5] Self-Heal Quota ≤ 3.
+                </div>
+              </button>
+              <div class="arch-connector">▼</div>
+              <button type="button" class="arch-node" data-arch-node="powerbatch">
+                <div class="arch-node-header">
+                  <span class="arch-node-title">[C] ⚡ PowerBatch Orchestration Engine</span>
+                  <span class="arch-node-tag">powerbatch.cmd / .mjs</span>
+                </div>
+                <div class="arch-node-desc">
+                  Thực thi hàng loạt 4 batch kiểm tra (Guardrails → White UI → Unit Tests → Vercel Check).
+                </div>
+              </button>
+              <div class="arch-connector">▼</div>
+              <div class="arch-tier-2">
+                <button type="button" class="arch-node" data-arch-node="sandbox">
+                  <div class="arch-node-header">
+                    <span class="arch-node-title">[D] Sandbox &amp; Self-Healing</span>
+                    <span class="arch-node-tag">tests/</span>
+                  </div>
+                  <div class="arch-node-desc">
+                    Tự động vá lỗi từ stderr JSON nếu mã thoát ≠ 0.
+                  </div>
+                </button>
+                <button type="button" class="arch-node" data-arch-node="vercel">
+                  <div class="arch-node-header">
+                    <span class="arch-node-title">[E] ▲ Vercel Cloud Preview</span>
+                    <span class="arch-node-tag">vercel.json</span>
+                  </div>
+                  <div class="arch-node-desc">
+                    Hot-reload Local Server (:3000) &amp; Vercel Edge Deployment.
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.45rem;">
+                <span class="pill pill-amber" id="inspector-tag">.antigravity/config.json</span>
+                <span style="font-size:0.72rem;color:var(--text-muted);">Chi tiết Thành phần &amp; Mã</span>
+              </div>
+              <h3 id="inspector-title" style="font-size:0.95rem;margin-bottom:0.3rem;"></h3>
+              <p id="inspector-summary" style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.6rem;"></p>
+              <div id="inspector-files" style="display:flex;gap:0.35rem;flex-wrap:wrap;margin-bottom:0.6rem;"></div>
+              <pre class="inspector-code" id="inspector-snippet"></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB 3: POWERBATCH -->
+        <div id="sys-panel-tab-powerbatch" data-sys-panel="tab-powerbatch" hidden>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.8rem;flex-wrap:wrap;gap:0.5rem;">
+            <div>
+              <h3 style="font-size:0.92rem;">Bộ điều phối PowerBatch &amp; Vòng lặp Tự sửa lỗi (Self-Healing)</h3>
+              <p style="font-size:0.76rem;color:var(--text-secondary);">
+                Kích hoạt trực tiếp chuỗi kiểm tra trong <code>.antigravity/test_commands.json</code>:
+              </p>
+            </div>
+            <div style="display:flex;gap:0.5rem;">
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-sim-selfheal">
+                🔄 Mô phỏng Lỗi ≠ 0 &amp; Tự Vá Code
+              </button>
+              <button type="button" class="btn btn-primary btn-sm" id="btn-run-powerbatch">
+                ⚡ Chạy PowerBatch Pipeline
+              </button>
+            </div>
+          </div>
+          <div class="arch-layout">
+            <div id="powerbatch-list"></div>
+            <div class="terminal-body" id="powerbatch-terminal">==============================================================
+⚡ POWERBATCH ORCHESTRATOR - Antigravity Verification Suite
+==============================================================
+▶ [batch-01-guardrails] Security &amp; Guardrails Audit ... PASSED
+▶ [batch-02-white-ui] White UI Design Token Verification ... PASSED
+▶ [batch-03-unit-tests] Automated Integration &amp; Architecture Tests ... PASSED
+▶ [batch-04-vercel-check] Vercel Deployment &amp; Route Readiness ... PASSED
+--------------------------------------------------------------
+🚀 Trạng thái tổng thể: PASSED | Vercel Preview Ready: true</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

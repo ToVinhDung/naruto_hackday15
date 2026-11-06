@@ -1,0 +1,48 @@
+{
+  "pipelineName": "Antigravity PowerBatch Verification Suite",
+  "version": "1.0.0",
+  "executionPolicy": {
+    "parallelizable": false,
+    "failFast": true,
+    "selfHealingRetries": 3
+  },
+  "batches": [
+    {
+      "id": "batch-01-guardrails",
+      "name": "Security & Guardrails Audit",
+      "stage": "pre-verify",
+      "command": "node .antigravity/powerbatch.mjs audit-guardrails",
+      "timeoutMs": 10000,
+      "required": true,
+      "description": "Kiểm tra whitelist lệnh, chặn rò rỉ .env secrets và xác thực cấu trúc .antigravity"
+    },
+    {
+      "id": "batch-02-white-ui",
+      "name": "White UI Design Token Verification",
+      "stage": "lint",
+      "command": "node .antigravity/powerbatch.mjs verify-ui-tokens",
+      "timeoutMs": 10000,
+      "required": true,
+      "description": "Đảm bảo toàn bộ CSS/UI tuân thủ đúng White Tone Design System (#FFFFFF, #F8FAFC, #0F172A)"
+    },
+    {
+      "id": "batch-03-unit-tests",
+      "name": "Automated Integration & Architecture Tests",
+      "stage": "test",
+      "command": "node --test tests/system.test.mjs",
+      "timeoutMs": 15000,
+      "required": true,
+      "description": "Chạy bộ kiểm thử tự động xác minh kiến trúc, PowerBatch engine và luồng tính năng"
+    },
+    {
+      "id": "batch-04-vercel-check",
+      "name": "Vercel Deployment & Route Readiness",
+      "stage": "deploy-check",
+      "command": "node .antigravity/powerbatch.mjs verify-vercel",
+      "timeoutMs": 10000,
+      "required": true,
+      "description": "Xác thực vercel.json, headers bảo mật, routes và tài nguyên tĩnh trước khi đẩy lên Vercel Preview"
+    }
+  ]
+}
+

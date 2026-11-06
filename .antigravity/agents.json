@@ -1,0 +1,57 @@
+{
+  "$schema": "https://antigravity.dev/schemas/agents.v1.json",
+  "escrowAgentSystem": "Antigravity 4-Tier Autonomous Escrow Agents",
+  "principle": "Agents không tự ý rút tiền khỏi Vault; mọi quyết định giải ngân/phân xử cuối cùng đều neo bằng chứng mật mã (Hash/ProofRegistry) và qua chữ ký con người (HITL / Multi-Sig).",
+  "agents": [
+    {
+      "id": "agent-tier-1-scope-decomposer",
+      "stage": "1. Soạn thảo (Tầng khởi tạo)",
+      "roleName": "Thư ký Phân rã Checklist (Scope Decomposer Agent)",
+      "tools": ["LLM Parser", "JSON Schema Validator", "SHA-256 Checklist Hasher"],
+      "authority": "Đề xuất (Cần 2 bên Buyer & Seller ký đồng thuận)",
+      "capabilities": [
+        "Phân rã brief mơ hồ thành tiêu chí kiểm thử có cấu trúc (JSON Schema)",
+        "Phân loại ranh giới Deterministic (Khách quan - AI chấm) vs Subjective (Chủ quan - Client duyệt tay)",
+        "Băm (Hash) bộ checklist để neo (anchor) bất biến vào Smart Contract / Database"
+      ]
+    },
+    {
+      "id": "agent-tier-2-sandbox-verifier",
+      "stage": "2. Giao hàng (Tầng thực thi & Giao nộp)",
+      "roleName": "Kỹ sư Kiểm thử Tự động (Autonomous Verification Pipeline)",
+      "tools": ["Git API", "Docker / Firecracker microVM Sandbox", "Test Runners", "cURL Prober", "Artifact Metadata Reader"],
+      "authority": "Tự động chạy độc lập trong Sandbox biệt lập",
+      "capabilities": [
+        "Gọi GitHub API clone đúng commit vào môi trường Sandbox biệt lập",
+        "Tự cài dependencies, chạy linter, unit test & integration test",
+        "Dựng local server trong sandbox, gọi curl kiểm tra JSON schema & response time",
+        "Đọc metadata file thiết kế Figma / tài liệu để đối chiếu số lượng artboard & component"
+      ]
+    },
+    {
+      "id": "agent-tier-3-technical-assessor",
+      "stage": "3. Nghiệm thu (Tầng phán quyết kỹ thuật)",
+      "roleName": "Giám định viên Kỹ thuật (Proposal & Proof Generation Agent)",
+      "tools": ["Log Aggregator", "Hashing Tool", "Oracle Relay (ProofRegistry)"],
+      "authority": "Đề xuất giải ngân & ghi log on-chain (Không tự ý rút tiền từ Vault)",
+      "capabilities": [
+        "Tổng hợp Test Report minh bạch (tỷ lệ pass/fail, coverage, cảnh báo bảo mật)",
+        "Đề xuất giải ngân cho Client nếu đạt 100% tiêu chí khách quan, hoặc gửi log lỗi chi tiết (VD: lỗi 500 input âm) cho Freelancer",
+        "Băm Test Report Hash và ghi bất biến lên ProofRegistry on-chain"
+      ]
+    },
+    {
+      "id": "agent-tier-4-fact-finding-bailiff",
+      "stage": "4. Tranh chấp (Tầng giải quyết tranh chấp)",
+      "roleName": "Thừa phát lại Trích xuất Chứng cứ (Autonomous Fact-finding Bailiff)",
+      "tools": ["Audit Trail Reader", "Git Diff Analyzer", "Scope Creep Detector", "Split Calculator"],
+      "authority": "Tổng hợp Hồ sơ Vụ việc (Dispute Dossier) & Đề xuất tỷ lệ chia quỹ cho Trọng tài (HITL)",
+      "capabilities": [
+        "Tổng hợp hợp đồng gốc, Checklist Hash, lịch sử commit và mốc giao hàng",
+        "Đối chiếu tiêu chí khách quan đã đạt/chưa đạt và phát hiện yêu cầu vượt phạm vi cam kết (Scope Creep)",
+        "Đề xuất tỷ lệ phân chia quỹ (VD: hoàn thành 70% công việc -> đề xuất 65% Freelancer / 35% Client) để Trọng tài con người ký duyệt"
+      ]
+    }
+  ]
+}
+
