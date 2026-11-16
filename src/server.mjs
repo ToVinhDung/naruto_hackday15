@@ -22,6 +22,7 @@ import { createBaseline, loadBaseline } from './engine/baselineManager.mjs';
 import { evaluateSubmission } from './engine/ruleEngine.mjs';
 import { refineVagueCriteria, loadHistoricalBaselines } from './engine/criteriaRefiner.mjs';
 import { parseGitHubUrl, fetchGitHubCommitDetails, runSandboxTests } from './tools/githubVerifier.mjs';
+import { AGENT_VERIFICATION_TOOLS, executeAgentTool } from './tools/agentTools.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -314,6 +315,25 @@ export function createPreviewServer() {
         });
       } catch (err) {
         sendJson(res, 400, { error: err.message });
+      }
+      return;
+    }
+
+    if (urlPath === '/api/tools' && req.method === 'GET') {
+      sendJson(res, 200, {
+        ok: true,
+        tools: AGENT_VERIFICATION_TOOLS.map(({ name, description }) => ({ name, description }))
+      });
+      return;
+    }
+
+    if (urlPath === '/api/tools/execute' && req.method === 'POST') {
+      try {
+        const { tool, args } = await readJsonBody(req);
+        const result = await executeAgentTool(tool, args || {});
+        sendJson(res, 200, { ok: true, result });
+      } catch (err) {
+        sendJson(res, 400, { ok: false, error: err.message });
       }
       return;
     }
