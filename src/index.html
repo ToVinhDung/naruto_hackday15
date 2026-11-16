@@ -3,132 +3,108 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>VibeEscrow — Hệ thống Giao dịch Ký quỹ Thông minh (Client • Freelancer • Arbiter)</title>
+  <title>VibeEscrow — Không gian tài chính</title>
   <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./banking.css" />
+  <meta name="theme-color" content="#86183d" />
+  <meta name="description" content="Không gian quản lý hợp đồng, ký quỹ và phê duyệt giao dịch của VibeEscrow." />
 </head>
 <body>
   <div class="app-shell">
-    <!-- ======================================================================
-         1. THANH BAR LỀ TRÊN (TOPBAR): Bấm vào AI Agents (cạnh Guardrails) hiện 4 Tầng
-         ====================================================================== -->
+    <a class="bank-skip-link" href="#bank-page-title">Đến nội dung chính</a>
+    <button class="bank-menu-scrim" id="bank-menu-scrim" aria-label="Đóng menu" type="button" tabindex="-1"></button>
+    <aside class="bank-sidebar" id="bank-sidebar" aria-label="Điều hướng chính">
+      <a class="bank-brand" href="./" aria-label="VibeEscrow — Trang tổng quan">
+        <span class="bank-brand-mark" data-bank-icon="shield"></span>
+        <span><strong>Vibe<span>Escrow</span></strong><small>QUẢN LÝ GIAO DỊCH KÝ QUỸ</small></span>
+      </a>
+      <button type="button" class="bank-sidebar-close bank-icon-button" data-bank-action="close-menu" aria-label="Đóng menu"><span data-bank-icon="close"></span></button>
+      <div class="bank-workspace-label">KHÔNG GIAN LÀM VIỆC</div>
+      <nav id="bank-navigation"></nav>
+      <div class="bank-sidebar-bottom">
+        <div class="bank-demo-note"><span data-bank-icon="shield"></span><div><strong>Không gian trải nghiệm</strong><small>Dữ liệu và giao dịch mô phỏng</small></div></div>
+        <button type="button" class="bank-utility" id="btn-toggle-onboarding-guide"><span data-bank-icon="help"></span>Hướng dẫn sử dụng</button>
+        <details class="bank-tools">
+          <summary><span data-bank-icon="settings"></span>Công cụ hệ thống</summary>
+          <button type="button" id="btn-open-ai-agents-modal">Trợ lý AI & kiểm chứng</button>
+          <button type="button" id="btn-open-guardrails-shortcut">Kiểm soát an toàn</button>
+          <button type="button" id="btn-open-system-modal">Chi tiết hệ thống</button>
+          <button type="button" class="btn btn-secondary btn-xs" id="btn-arbiter-circuit-breaker" hidden>Tạm dừng giải ngân</button>
+          <span class="pill" id="vault-security-pill"></span>
+        </details>
+        <span class="bank-connection" id="api-sync-indicator">Đang kết nối dữ liệu…</span>
+      </div>
+    </aside>
+
     <header class="topbar">
       <div class="topbar-inner">
-        <div class="brand">
-          <div class="brand-mark">VE</div>
-          <div>
-            <div class="brand-title">VibeEscrow Smart Custody</div>
-            <div class="brand-subtitle">Multi-Sig 2-of-3 • Segregated Vault • Dynamic API</div>
-          </div>
+        <div class="bank-breadcrumb-wrap">
+          <button type="button" class="bank-icon-button bank-menu-toggle" id="bank-menu-toggle" aria-label="Mở menu" aria-controls="bank-sidebar" aria-expanded="false"><span data-bank-icon="menu"></span></button>
+          <span class="bank-breadcrumb-root">Không gian làm việc</span><span class="bank-breadcrumb-divider">/</span><strong id="bank-breadcrumb">Tổng quan</strong>
         </div>
-
-        <div class="topbar-actions">
-          <button type="button" class="btn-system-details" id="btn-open-ai-agents-modal" style="background:var(--accent-purple-soft);color:var(--accent-purple);border-color:#DDD6FE;">
-            🤖 AI Agents (4 Tầng)
-          </button>
-          <button type="button" class="btn-system-details" id="btn-open-guardrails-shortcut" style="background:var(--accent-amber-soft);color:#B45309;border-color:#FDE68A;">
-            🛡️ Guardrails: 5/5 Active
-          </button>
-          <span class="pill pill-emerald">
-            <span class="dot dot-emerald"></span>
-            PowerBatch: 4/4 Verified
-          </span>
-          <span class="pill pill-blue">
-            <span class="dot dot-blue"></span>
-            ▲ Vercel Preview: Ready
-          </span>
-          <button type="button" class="btn-system-details" id="btn-open-system-modal">
-            ⚙ Chi tiết hệ thống
-          </button>
+        <div class="bank-topbar-right"><span class="bank-demo-tag">Bản demo</span><span id="bank-current-date"></span>
+          <button type="button" class="bank-icon-button bank-notification-button" id="bank-notification-button" data-bank-action="notifications" aria-label="Xem mục cần chú ý"><span data-bank-icon="bell"></span><i id="bank-notification-dot"></i></button>
+          <div class="bank-profile"><span class="bank-avatar" id="bank-profile-initials">KH</span><span><strong id="bank-profile-role">Khách hàng</strong><small>VibeEscrow Workspace</small></span></div>
         </div>
       </div>
     </header>
 
-    <!-- ======================================================================
-         2. THANH CHỈ SỐ TÀI CHÍNH & CHUYỂN ĐỔI 3 TRẠNG THÁI ĐĂNG NHẬP VAI TRÒ
-         ====================================================================== -->
-    <section class="finance-strip">
-      <div class="finance-bar-inner">
-        <div class="wallet-kpi-grid">
-          <div class="wallet-card" id="wallet-card-client">
-            <div class="wallet-card-header">
-              <span>Ví Client (Buyer)</span>
-              <span class="pill pill-blue">FIAT/WEB3</span>
-            </div>
-            <div class="wallet-card-amount" id="kpi-client-balance">15.000.000 ₫</div>
-          </div>
-
-          <div class="wallet-card">
-            <div class="wallet-card-header">
-              <span>Smart Vault Khóa</span>
-              <span class="pill pill-amber" id="kpi-escrow-count">3 Hợp đồng</span>
-            </div>
-            <div class="wallet-card-amount" id="kpi-escrow-locked">11.000.000 ₫</div>
-          </div>
-
-          <div class="wallet-card" id="wallet-card-freelancer" hidden>
-            <div class="wallet-card-header">
-              <span>Ví Freelancer (Net)</span>
-              <span class="pill pill-emerald">SELLER</span>
-            </div>
-            <div class="wallet-card-amount" id="kpi-freelancer-balance">8.450.000 ₫</div>
-          </div>
-
-          <div class="wallet-card">
-            <div class="wallet-card-header">
-              <span>Quỹ Đóng băng</span>
-              <span class="pill pill-rose" id="kpi-disputed-count">1 Tranh chấp</span>
-            </div>
-            <div class="wallet-card-amount" id="kpi-disputed-amount">3.000.000 ₫</div>
-          </div>
-
-          <div class="wallet-card">
-            <div class="wallet-card-header">
-              <span>Phí Sàn &amp; Gas (2%)</span>
-              <span class="pill pill-purple">AUTO FEE</span>
-            </div>
-            <div class="wallet-card-amount" id="kpi-platform-fees">320.000 ₫</div>
-          </div>
-        </div>
-
-        <!-- 3 TRẠNG THÁI ĐĂNG NHẬP VAI TRÒ (Client • Freelancer • Arbiter) -->
-        <div class="auth-role-switcher" role="tablist" aria-label="Trạng thái đăng nhập vai trò">
-          <span class="auth-label">🔑 VAI TRÒ:</span>
-          <button type="button" class="auth-role-btn active" data-login-role="client" id="login-btn-client">
-            👤 Client (Buyer)
-          </button>
-          <button type="button" class="auth-role-btn" data-login-role="freelancer" id="login-btn-freelancer">
-            💻 Freelancer (Seller)
-          </button>
-          <button type="button" class="auth-role-btn" data-login-role="arbiter" id="login-btn-arbiter">
-            ⚖️ Arbiter (Trọng tài)
-          </button>
-        </div>
+    <div class="bank-page-heading">
+      <div><div class="bank-eyebrow">VIBEESCROW · KHÔNG GIAN TÀI CHÍNH</div><h1 id="bank-page-title" tabindex="-1">Tổng quan tài khoản</h1><p id="bank-page-subtitle">Theo dõi dòng tiền và quản lý hợp đồng trong một không gian.</p></div>
+      <button type="button" class="btn btn-primary bank-primary-action" data-bank-action="primary"><span data-bank-icon="plus"></span><span id="bank-primary-label">Tạo hợp đồng</span></button>
+    </div>
+    <div class="bank-role-bar">
+      <span>Xem với vai trò</span>
+      <div class="auth-role-switcher" role="group" aria-label="Chọn vai trò trải nghiệm">
+        <button type="button" class="auth-role-btn active" data-login-role="client" id="login-btn-client" aria-pressed="true">Khách hàng</button>
+        <button type="button" class="auth-role-btn" data-login-role="freelancer" id="login-btn-freelancer" aria-pressed="false">Freelancer</button>
+        <button type="button" class="auth-role-btn" data-login-role="arbiter" id="login-btn-arbiter" aria-pressed="false">Trọng tài</button>
+      </div>
+      <span class="bank-role-hint">Mỗi vai trò có các thao tác riêng</span>
+      <span id="active-session-badge" hidden></span>
+    </div>
+    <section class="finance-strip" aria-label="Tổng hợp tài chính">
+      <div class="wallet-kpi-grid">
+        <div class="wallet-card bank-wallet-primary" id="wallet-card-client"><div class="wallet-card-header"><span>Số dư khả dụng</span><span data-bank-icon="wallet"></span></div><div class="wallet-card-amount" id="kpi-client-balance">—</div><div class="bank-wallet-footer"><span>Tài khoản khách hàng</span><button type="button" data-bank-action="money">Nạp tiền <span data-bank-icon="arrow"></span></button></div></div>
+        <div class="wallet-card bank-wallet-primary" id="wallet-card-freelancer" hidden><div class="wallet-card-header"><span>Số dư khả dụng</span><span data-bank-icon="wallet"></span></div><div class="wallet-card-amount" id="kpi-freelancer-balance">—</div><div class="bank-wallet-footer"><span>Tài khoản freelancer</span><button type="button" data-bank-action="money">Rút tiền <span data-bank-icon="arrow"></span></button></div></div>
+        <div class="wallet-card"><div class="wallet-card-header"><span>Tiền đang ký quỹ</span><span class="bank-kpi-icon" data-bank-icon="shield"></span></div><div class="wallet-card-amount" id="kpi-escrow-locked">—</div><div class="bank-wallet-footer"><span id="kpi-escrow-count">—</span><span class="bank-kpi-note">Đang hoạt động</span></div></div>
+        <div class="wallet-card"><div class="wallet-card-header"><span>Tiền đang tranh chấp</span><span class="bank-kpi-icon bank-red" data-bank-icon="alert"></span></div><div class="wallet-card-amount" id="kpi-disputed-amount">—</div><div class="bank-wallet-footer"><span id="kpi-disputed-count">—</span><span class="bank-kpi-note">Tạm giữ</span></div></div>
+        <div class="wallet-card"><div class="wallet-card-header"><span>Phí đã ghi nhận</span><span class="bank-kpi-icon bank-gold" data-bank-icon="file"></span></div><div class="wallet-card-amount" id="kpi-platform-fees">—</div><div class="bank-wallet-footer"><span>Phí sàn & giao dịch</span><span class="bank-kpi-note">VND</span></div></div>
       </div>
     </section>
-
-    <!-- ======================================================================
-         3. VÙNG LÀM VIỆC CHÍNH (Gọn gàng, bỏ các ghi chú thừa, không hiện tầng AI ở vùng)
-         ====================================================================== -->
     <main class="workspace-main">
-      <div class="role-session-banner">
-        <div style="display:flex;align-items:center;gap:0.65rem;">
-          <span class="pill pill-blue" id="active-session-badge">👤 CLIENT (BUYER)</span>
-          <span class="pill pill-mono" id="api-sync-indicator">● API Live Sync</span>
+      <button type="button" id="btn-back-to-3-buttons" hidden>Về tổng quan</button>
+      <!-- HƯỚNG DẪN NHANH 3 BƯỚC CHO NON-TECH FOUNDERS -->
+      <section id="non-tech-onboarding-strip" style="margin-bottom:0.85rem;background:#FFFFFF;border:1px solid var(--border-color);border-left:4px solid var(--accent-blue);border-radius:var(--radius-md);padding:0.75rem 1rem;box-shadow:var(--shadow-xs);" hidden>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.45rem;">
+          <strong style="font-size:0.84rem;color:var(--text-primary);">🧭 Quy trình 3 bước đơn giản (Dành cho Non-tech Founders)</strong>
+          <button type="button" class="btn btn-secondary btn-xs" id="btn-close-onboarding-guide">Đóng ✕</button>
         </div>
-        <button type="button" class="btn btn-secondary btn-sm" id="btn-back-to-3-buttons" hidden>
-          ← Quay lại
-        </button>
-      </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0.6rem;font-size:0.76rem;color:var(--text-secondary);">
+          <div style="padding:0.5rem 0.65rem;background:#F8FAFC;border:1px solid var(--border-color);border-radius:var(--radius-sm);">
+            <strong style="color:var(--accent-blue);">Bước 1: Tạo Hợp đồng &amp; Chia mốc</strong>
+            <div>Nhập mô tả tự nhiên → AI Tầng 1 tự động tách tiêu chí đo lường được &amp; khóa phạm vi (chống Scope Creep).</div>
+          </div>
+          <div style="padding:0.5rem 0.65rem;background:#F8FAFC;border:1px solid var(--border-color);border-radius:var(--radius-sm);">
+            <strong style="color:var(--accent-emerald);">Bước 2: Nạp quỹ VietQR an toàn</strong>
+            <div>Quét VietQR MB Bank → Arbiter đối soát xác nhận tiền vào quỹ (phân tầng AML/KYC tự động theo hạn mức).</div>
+          </div>
+          <div style="padding:0.5rem 0.65rem;background:#F8FAFC;border:1px solid var(--border-color);border-radius:var(--radius-sm);">
+            <strong style="color:var(--accent-purple);">Bước 3: AI Test Sandbox &amp; Giải ngân</strong>
+            <div>Freelancer nộp link GitHub → AI Sandbox chấm tự động (có Cache giảm độ trễ) → Đạt mới mở khóa tiền.</div>
+          </div>
+        </div>
+      </section>
 
       <!-- ======================================================================
            VÙNG CHO THÔNG BÁO ĐỂ DUYỆT TIỀN NẠP VÀO (VietQR Pro 24/7)
            ====================================================================== -->
-      <section class="topup-notification-zone" id="topup-notification-zone" aria-label="Vùng thông báo duyệt tiền nạp vào">
+      <section id="bank-topups-page" hidden aria-label="Yêu cầu nạp tiền">      <section class="topup-notification-zone" id="topup-notification-zone" aria-label="Vùng thông báo duyệt tiền nạp vào">
         <div class="topup-notification-header">
           <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
             <span style="font-size:1.15rem;">🔔</span>
             <strong style="font-size:0.92rem;color:var(--text-primary);">
-              VÙNG THÔNG BÁO DUYỆT TIỀN NẠP VÀO (VietQR Pro 24/7)
+              Yêu cầu nạp tiền đang chờ xử lý
             </strong>
             <span class="topup-pulse-badge" id="notify-zone-count-badge">0 thông báo</span>
             <span class="pill pill-blue">MB Bank: 0898143615 • TO VINH DUNG</span>
@@ -147,6 +123,25 @@
         </div>
       </section>
 
+      </section>
+      <div id="bank-quick-actions" class="bank-quick-actions" aria-label="Thao tác nhanh"></div>
+      <div class="bank-dashboard" id="bank-dashboard">
+        <div class="bank-left-column">
+          <section class="bank-panel bank-contracts-panel" aria-labelledby="bank-table-title">
+            <div class="bank-panel-header"><h2 id="bank-table-title">Hợp đồng gần đây</h2><button type="button" id="bank-see-contracts" class="bank-text-button" data-bank-nav="contracts">Xem tất cả <span data-bank-icon="arrow"></span></button></div>
+            <div class="bank-table-toolbar"><div id="bank-filters" class="bank-filters" role="group" aria-label="Lọc trạng thái hợp đồng"></div><label class="bank-search"><span data-bank-icon="search"></span><input id="bank-search" type="search" placeholder="Tìm mã, tên hợp đồng…" aria-label="Tìm hợp đồng theo mã, tên hoặc đối tác" autocomplete="off" /></label></div>
+            <div class="bank-table-scroll" tabindex="0" role="region" aria-label="Danh sách hợp đồng, có thể cuộn ngang"><table class="bank-table"><thead><tr><th scope="col">HỢP ĐỒNG</th><th scope="col">ĐỐI TÁC</th><th scope="col">SỐ TIỀN</th><th scope="col">TRẠNG THÁI</th><th scope="col"><span class="bank-sr-only">Thao tác</span></th></tr></thead><tbody id="bank-contract-rows"></tbody></table></div>
+            <div class="bank-table-footer"><span id="bank-table-count" aria-live="polite"></span><div><button type="button" class="bank-pagination" id="bank-prev" aria-label="Trang trước">‹</button><button type="button" class="bank-pagination" id="bank-next" aria-label="Trang sau">›</button></div></div>
+          </section>
+          <section class="bank-panel" id="bank-recent-section"><div class="bank-panel-header"><h2>Hoạt động gần đây</h2><button type="button" class="bank-text-button" data-bank-nav="history">Xem lịch sử <span data-bank-icon="arrow"></span></button></div><div id="bank-recent-activity"></div></section>
+        </div>
+        <aside class="bank-right-column" id="bank-right-column" aria-label="Thông tin cần theo dõi">
+          <section class="bank-panel bank-attention-panel" id="bank-attention-panel" tabindex="-1"><div class="bank-panel-header"><h2>Cần chú ý</h2><span class="bank-attention-count" id="bank-task-count">0</span></div><div id="bank-tasks"></div></section>
+          <section class="bank-panel bank-funds-panel"><div class="bank-panel-header"><h2>Cơ cấu tiền ký quỹ</h2><span data-bank-icon="shield"></span></div><span class="bank-fund-label">Tổng tiền đang giữ</span><strong class="bank-fund-total" id="bank-all-escrow">—</strong><div class="bank-fund-track" id="bank-fund-track" aria-hidden="true"></div><div class="bank-fund-legend"><span><i></i>Đang thực hiện</span><strong id="bank-working-escrow">—</strong></div><div class="bank-fund-legend"><span><i></i>Đang tranh chấp</span><strong id="bank-frozen-escrow">—</strong></div><p>Tiền được giải ngân theo tiến độ nghiệm thu của từng hợp đồng.</p></section>
+          <div class="bank-support-note"><span data-bank-icon="help"></span><p>Cần tìm hiểu quy trình?<br><button type="button" id="bank-guide-shortcut">Xem hướng dẫn 3 bước <span aria-hidden="true">→</span></button></p></div>
+        </aside>
+      </div>
+      <section class="bank-panel" id="bank-history-page" hidden><div class="bank-panel-header"><h2>Nhật ký hoạt động</h2><span id="bank-history-count"></span></div><div id="bank-history-list"></div></section>
       <!-- TRẠNG THÁI A: 3 NÚT VÙNG CHÍNH -->
       <div class="zone-launcher-grid" id="zone-launcher-grid" data-zone-group="launcher"></div>
 
@@ -351,13 +346,21 @@
                 </div>
                 <div class="form-row-2">
                   <div class="form-group">
-                    <label class="form-label" for="contract-criteria-input">Tiêu chí Nghiệm thu</label>
-                    <input
-                      type="text"
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;margin-bottom:0.25rem;flex-wrap:wrap;">
+                      <label class="form-label" for="contract-criteria-input" style="margin-bottom:0;">Tiêu chí Nghiệm thu (mỗi dòng 1 ý)</label>
+                      <button type="button" class="btn btn-secondary btn-xs" id="btn-refine-criteria">
+                        🪄 Agent Chuẩn hóa Tiêu chí
+                      </button>
+                    </div>
+                    <textarea
                       id="contract-criteria-input"
                       class="form-input"
-                      value="Làm web đẹp, mượt"
-                    />
+                      rows="3"
+                      style="resize:vertical;min-height:68px;"
+                      placeholder="Nhập mỗi dòng 1 tiêu chí, ví dụ:&#10;API chạy nhanh&#10;Code không lỗi&#10;Giao diện đẹp"
+                    >API chạy nhanh
+Code không lỗi
+Giao diện đẹp</textarea>
                   </div>
                   <div class="form-group">
                     <label class="form-label" for="contract-sig-input">Chữ ký Đồng thuận</label>
@@ -367,6 +370,7 @@
                     </select>
                   </div>
                 </div>
+                <div id="refined-criteria-comparison-box" class="alert-box" style="margin-bottom:0.75rem;padding:0.75rem;" hidden></div>
                 <div class="fee-preview-box" id="contract-fee-preview">
                   <div class="fee-preview-row">
                     <span>Gross Khóa Vault / Phí 2% + Gas:</span>
@@ -450,10 +454,16 @@
                     />
                   </div>
                 </div>
-                <button type="submit" class="btn btn-emerald btn-block">
-                  📤 Gửi Bàn giao &amp; Kiểm tra Nghiệm thu
-                </button>
+                <div style="display:flex;gap:0.6rem;flex-wrap:wrap;">
+                  <button type="button" class="btn btn-secondary" id="btn-verify-github-milestone" style="flex:1;min-width:220px;">
+                    🔍 Agent Kiểm tra GitHub &amp; Nghiệm thu
+                  </button>
+                  <button type="submit" class="btn btn-emerald" style="flex:1;min-width:220px;">
+                    📤 Gửi Bàn giao &amp; Kiểm tra Nghiệm thu
+                  </button>
+                </div>
                 <div id="freelancer-submit-feedback" class="alert-box" hidden></div>
+                <div id="github-verification-report-box" class="alert-box" style="margin-top:0.65rem;padding:0.75rem;" hidden></div>
 
                 <!-- Hộp thông báo & khuyến nghị của Agent (CHỈ HIỆN KHI CÓ BƯỚC KHÔNG PASS) -->
                 <div id="freelancer-agent-failure-box" class="alert-box alert-error" style="margin-top:0.65rem;" hidden></div>
@@ -616,20 +626,7 @@
     <!-- ======================================================================
          4. THANH DOCK DƯỚI CÙNG (BOTTOM DOCK - Tối giản, bỏ ghi chú thừa)
          ====================================================================== -->
-    <footer class="bottom-dock">
-      <div class="bottom-dock-inner">
-        <div class="reputation-inline">
-          <span>🔒 <strong>Smart Escrow Custody:</strong></span>
-          <span class="pill pill-blue">Multi-Sig 2-of-3</span>
-          <span class="pill pill-emerald">SHA-256 Proof</span>
-          <span class="pill pill-amber">Timelock Auto-Release</span>
-          <span class="pill pill-purple">Split Settlement</span>
-        </div>
-        <div>
-          <span class="pill pill-mono">http://localhost:3000 • API Connected</span>
-        </div>
-      </div>
-    </footer>
+    <footer class="bank-footer"><span>VibeEscrow · Quản lý giao dịch ký quỹ</span><span>Phiên bản trải nghiệm · Dữ liệu mô phỏng</span></footer>
   </div>
 
   <!-- ========================================================================

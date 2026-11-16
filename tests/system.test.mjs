@@ -23,7 +23,10 @@ import {
   submitClientTopup,
   approveTopupByArbiter,
   rejectTopupByArbiter,
-  verifyArbiterPassword
+  verifyArbiterPassword,
+  evaluateAmlKycTier,
+  toggleVaultCircuitBreaker,
+  detectScopeCreepRisk
 } from '../src/app.js';
 import {
   ESCROW_AGENTS_MATRIX,
@@ -325,4 +328,44 @@ test('9. Hệ thống nạp tiền VietQR (MB - TO VINH DUNG 0898143615) & Quy t
   assert.equal(rejectRes.ok, true);
   assert.equal(rejectRes.entry.status, 'REJECTED');
   assert.equal(state.clientBalance, balanceBeforeReject, 'Số dư không đổi khi lệnh bị từ chối');
+});
+
+test('10. Giảm thiểu 5 Rủi ro: Circuit Breaker, AML/KYC phân tầng, Scope Creep Detection, Sandbox Cache & Onboarding Non-tech', () => {
+  const html = fs.readFileSync(path.join(ROOT_DIR, 'src/index.html'), 'utf8');
+  assert.match(html, /id="non-tech-onboarding-strip"/);
+  assert.match(html, /id="btn-arbiter-circuit-breaker"/);
+
+  // 1. Circuit Breaker chặn giải ngân khi tạm dừng
+  const state = createInitialEscrowState();
+  toggleVaultCircuitBreaker(state, true, 'Kiểm tra bảo mật');
+  assert.equal(state.vaultPaused, true);
+  const blockedRelease = releasePartialMilestone(state, 'ESC-101', 50);
+  assert.equal(blockedRelease.ok, false);
+  assert.match(blockedRelease.error, /Circuit Breaker/);
+
+  toggleVaultCircuitBreaker(state, false);
+  const allowedRelease = releasePartialMilestone(state, 'ESC-101', 50);
+  assert.equal(allowedRelease.ok, true);
+
+  // 2. AML/KYC phân tầng theo hạn mức
+  const tier1 = evaluateAmlKycTier(5000000);
+  assert.equal(tier1.tier, 'TIER_1_BASIC');
+  const tier2 = evaluateAmlKycTier(25000000);
+  assert.equal(tier2.tier, 'TIER_2_ENHANCED_KYC');
+  assert.equal(tier2.requiresEnhancedReview, true);
+
+  // 3. Phát hiện Scope Creep khi yêu cầu chỉnh sửa
+  const creep = detectScopeCreepRisk('Hãy thêm tính năng multi-region failover');
+  assert.equal(creep.hasScopeCreepRisk, true);
+  const revRes = requestContractRevision(state, 'ESC-102', 'Hãy thêm tính năng multi-region failover');
+  assert.equal(revRes.ok, true);
+  assert.ok(revRes.contract.scopeCreepWarning);
+
+  // 4. Sandbox Verification Cache theo commitHash giảm độ trễ & chi phí
+  const sub = { deliverableUrl: 'https://github.com/vibecode/cache-test/pull/7', commitHash: 'commit#cache777' };
+  const firstRun = runAutonomousVerificationAndAssessor(sub, 'PASS_100');
+  assert.equal(firstRun.cacheHit, false);
+  const secondRun = runAutonomousVerificationAndAssessor(sub, 'PASS_100');
+  assert.equal(secondRun.cacheHit, true);
+  assert.equal(secondRun.executionMs, 2);
 });

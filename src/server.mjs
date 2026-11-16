@@ -11,15 +11,47 @@ import {
   ESCROW_AGENTS_MATRIX,
   runScopeDecomposerAgent,
   runAutonomousVerificationAndAssessor,
-  runFactFindingBailiffAgent
+  runFactFindingBailiffAgent,
+  runScopeDecomposerAgentLive,
+  runAutonomousVerificationAndAssessorLive,
+  runFactFindingBailiffAgentLive,
+  fetchAvalancheContext
 } from './agents.js';
 import { createInitialEscrowState } from './app.js';
+import { createBaseline, loadBaseline } from './engine/baselineManager.mjs';
+import { evaluateSubmission } from './engine/ruleEngine.mjs';
+import { refineVagueCriteria, loadHistoricalBaselines } from './engine/criteriaRefiner.mjs';
+import { parseGitHubUrl, fetchGitHubCommitDetails, runSandboxTests } from './tools/githubVerifier.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, '..');
 
-const PORT = Number(process.env.PORT || 3000);
+function loadEnvFile() {
+  const envPath = path.join(ROOT_DIR, '.env');
+  if (!fs.existsSync(envPath)) return;
+  for (const rawLine of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eqIndex = line.indexOf('=');
+    if (eqIndex <= 0) continue;
+    const key = line.slice(0, eqIndex).trim();
+    const val = line.slice(eqIndex + 1).trim().replace(/^(['"])(.*)\1$/, '$2');
+    if (key && !(key in process.env)) {
+      process.env[key] = val;
+    }
+  }
+}
+
+loadEnvFile();
+
+// Respect the host/port supplied by preview tools; local start.bat still uses 3000.
+const cliOption = (name) => {
+  const index = process.argv.indexOf(name);
+  return index >= 0 ? process.argv[index + 1] : undefined;
+};
+const PORT = Number(process.env.PORT || cliOption('--port') || 3000);
+const HOST = cliOption('--host') || '0.0.0.0';
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -74,7 +106,12 @@ export function createPreviewServer() {
         status: 'ok',
         engine: 'Google Antigravity + PowerBatch + Vercel',
         uiTheme: 'Pure White (#FFFFFF)',
-        dynamicApi: true
+        dynamicApi: true,
+        geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+        geminiModel: process.env.GEMINI_MODEL || 'gemini-flash-latest',
+        githubConfigured: Boolean(process.env.GITHUB_TOKEN),
+        avalancheConfigured: Boolean(process.env.AVALANCHE_API_KEY),
+        avalancheChainId: process.env.AVALANCHE_CHAIN_ID || '43114'
       });
       return;
     }
@@ -121,7 +158,7 @@ export function createPreviewServer() {
     if ((urlPath === '/api/scope-decompose' || urlPath === '/api/agents/scope-decompose') && req.method === 'POST') {
       try {
         const { brief } = await readJsonBody(req);
-        const result = runScopeDecomposerAgent(brief);
+        const result = await runScopeDecomposerAgentLive(brief);
         sendJson(res, 200, result);
       } catch (err) {
         sendJson(res, 400, { error: err.message });
@@ -133,7 +170,7 @@ export function createPreviewServer() {
     if ((urlPath === '/api/verify-assess' || urlPath === '/api/agents/verify-assess') && req.method === 'POST') {
       try {
         const { submission, scenario } = await readJsonBody(req);
-        const result = runAutonomousVerificationAndAssessor(submission, scenario);
+        const result = await runAutonomousVerificationAndAssessorLive(submission, scenario);
         sendJson(res, 200, result);
       } catch (err) {
         sendJson(res, 400, { error: err.message });
@@ -145,11 +182,154 @@ export function createPreviewServer() {
     if ((urlPath === '/api/fact-finding' || urlPath === '/api/agents/fact-finding') && req.method === 'POST') {
       try {
         const contract = await readJsonBody(req);
-        const result = runFactFindingBailiffAgent(contract);
+        const result = await runFactFindingBailiffAgentLive(contract);
         sendJson(res, 200, result);
       } catch (err) {
         sendJson(res, 400, { error: err.message });
       }
+      return;
+    }
+
+    // API Chuẩn hóa Tiêu chí Nghiệm thu mơ hồ (RAG Historical Baselines + Rule + LLM)
+    if (urlPath === '/api/agreements/refine-criteria' && req.method === 'POST') {
+      try {
+        const { contractTitle, rawCriteria } = await readJsonBody(req);
+        const baselinesDir = path.join(ROOT_DIR, 'data', 'baselines');
+        const historicalBaselines = loadHistoricalBaselines(baselinesDir);
+        const refined = await refineVagueCriteria(contractTitle, rawCriteria, historicalBaselines);
+        sendJson(res, 200, { ok: true, ...refined });
+      } catch (err) {
+        sendJson(res, 400, { error: err.message });
+      }
+      return;
+    }
+
+    // API Kiểm tra GitHub & Nghiệm thu tự động theo Baseline (POST /api/milestones/:milestoneId/verify-github)
+    const verifyGhMatch = urlPath.match(/^\/api\/milestones\/([^/]+)\/verify-github$/);
+    if (verifyGhMatch && req.method === 'POST') {
+      try {
+        const milestoneId = decodeURIComponent(verifyGhMatch[1]);
+        const body = await readJsonBody(req);
+        const repoUrl = body.repoUrl || '';
+        const commitSha = body.commitSha || 'HEAD';
+        const testCommand = body.testCommand || 'node --test';
+        const agreementId = body.agreementId || milestoneId;
+
+        const baselinesDir = path.join(ROOT_DIR, 'data', 'baselines');
+        let baseline = loadBaseline(agreementId, milestoneId, { baseDir: baselinesDir });
+
+        if (!baseline && fs.existsSync(baselinesDir)) {
+          for (const file of fs.readdirSync(baselinesDir)) {
+            if (file.endsWith('.json') && file.includes(milestoneId)) {
+              baseline = JSON.parse(fs.readFileSync(path.join(baselinesDir, file), 'utf8'));
+              break;
+            }
+          }
+        }
+
+        if (!baseline) {
+          const matchedContract = serverEscrowState.contracts.find(
+            (c) => c.id === agreementId || c.id === milestoneId
+          );
+          const refined = await refineVagueCriteria(
+            matchedContract?.title || body.contractTitle || 'Hợp đồng Escrow',
+            matchedContract?.acceptanceCriteria || body.acceptanceCriteria || ['API chạy nhanh', 'Code không lỗi'],
+            loadHistoricalBaselines(baselinesDir),
+            { useLlm: false }
+          );
+          baseline = createBaseline({
+            agreementId: matchedContract?.id || agreementId,
+            milestoneId,
+            persist: false,
+            scopeConstraints: body.scopeConstraints || { forbiddenPaths: ['.env', 'config/secrets'] },
+            acceptanceCriteria: refined.criteria.map((c) =>
+              c.type === 'DETERMINISTIC'
+                ? {
+                    id: c.id,
+                    type: 'DETERMINISTIC',
+                    metric: c.metric,
+                    operator: c.operator,
+                    expectedValue: c.expectedValue,
+                    weight: c.weight
+                  }
+                : {
+                    id: c.id,
+                    type: 'SUBJECTIVE',
+                    description: c.clarifiedDescription || c.originalText,
+                    requiresHitl: true,
+                    weight: c.weight
+                  }
+            )
+          });
+        }
+
+        const parsedGh = parseGitHubUrl(repoUrl);
+        const [commitDetails, sandbox] = await Promise.all([
+          parsedGh.valid
+            ? fetchGitHubCommitDetails({
+                owner: parsedGh.owner,
+                repo: parsedGh.repo,
+                commitSha: commitSha !== 'HEAD' ? commitSha : parsedGh.commitSha || 'HEAD'
+              })
+            : Promise.resolve({ ok: false, changedFiles: [] }),
+          runSandboxTests({ repoUrl, commitSha, testCommand })
+        ]);
+
+        const changedFiles =
+          Array.isArray(commitDetails.changedFiles) && commitDetails.changedFiles.length > 0
+            ? commitDetails.changedFiles
+            : sandbox.deliveredFiles;
+
+        const evaluation = evaluateSubmission(baseline, {
+          changedFiles,
+          deliveredFiles: sandbox.deliveredFiles,
+          metrics: sandbox.metrics
+        });
+
+        sendJson(res, 200, {
+          ok: true,
+          milestoneId,
+          agreementId: baseline.agreementId,
+          baselineHash: baseline.baselineHash,
+          github: {
+            validUrl: parsedGh.valid,
+            owner: parsedGh.owner,
+            repo: parsedGh.repo,
+            commitSha: commitDetails.sha || commitSha,
+            message: commitDetails.message || '',
+            author: commitDetails.author || '',
+            changedFiles
+          },
+          sandbox: {
+            cloned: sandbox.cloned,
+            testCommand: sandbox.testCommand,
+            exitCode: sandbox.exitCode,
+            executionTimeMs: sandbox.executionTimeMs,
+            deliveredFilesCount: sandbox.deliveredFiles.length,
+            metrics: sandbox.metrics,
+            testLog: sandbox.testLog
+          },
+          evaluation,
+          testReportHash: evaluation.testReportHash
+        });
+      } catch (err) {
+        sendJson(res, 400, { error: err.message });
+      }
+      return;
+    }
+
+    if (urlPath === '/api/avalanche/status' && req.method === 'GET') {
+      const reqUrl = new URL(req.url || '/', 'http://localhost');
+      const result = await fetchAvalancheContext({
+        chainId: reqUrl.searchParams.get('chainId') || undefined,
+        address: reqUrl.searchParams.get('address') || undefined,
+        txHash: reqUrl.searchParams.get('txHash') || undefined
+      });
+      if (!result) {
+        sendJson(res, 502, { ok: false, error: 'Không thể kết nối Avalanche Glacier API' });
+        return;
+      }
+      sendJson(res, 200, { ok: true, ...result });
       return;
     }
 
@@ -194,7 +374,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
       process.exit(1);
     }
   });
-  server.listen(PORT, '0.0.0.0', () => {
+  server.listen(PORT, HOST, () => {
     console.log(`[Antigravity Preview Server] Listening at http://localhost:${PORT} and http://127.0.0.1:${PORT}`);
   });
 }

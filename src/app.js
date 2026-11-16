@@ -1,3 +1,5 @@
+import { createBankDashboard } from './bank-ui.js';
+
 /**
  * VibeEscrow Smart Custody & Dynamic API Controller (src/app.js)
  * - Kết nối API động (/api/state, /api/agents/scope-decompose, /api/agents/verify-assess, /api/agents/fact-finding)
@@ -12,7 +14,8 @@ import {
   runAutonomousVerificationAndAssessor,
   runFactFindingBailiffAgent,
   isValidGitHubUrl,
-  validateContractTitle
+  validateContractTitle,
+  detectScopeCreepRisk
 } from './agents.js';
 
 export {
@@ -21,7 +24,8 @@ export {
   runAutonomousVerificationAndAssessor,
   runFactFindingBailiffAgent,
   isValidGitHubUrl,
-  validateContractTitle
+  validateContractTitle,
+  detectScopeCreepRisk
 };
 
 /**
@@ -217,7 +221,7 @@ export const ROLE_ZONES_CONFIG = {
     zones: [
       {
         id: 'view-client-zone-1',
-        shortTitle: 'Vùng 1: Hợp đồng & Vault',
+        shortTitle: 'Hợp đồng',
         title: 'Vùng 1: Quản lý Giao dịch, Nghiệm thu & Smart Vault',
         icon: '📋',
         tag: 'Multi-Sig 2/3',
@@ -225,7 +229,7 @@ export const ROLE_ZONES_CONFIG = {
       },
       {
         id: 'view-client-zone-2',
-        shortTitle: 'Vùng 2: Nạp Quỹ (>10k)',
+        shortTitle: 'Nạp tiền',
         title: 'Vùng 2: Nạp Quỹ Đa Phương thức (> 10.000đ • Fiat & USDC/USDT)',
         icon: '💳',
         tag: 'Fiat + Web3',
@@ -233,7 +237,7 @@ export const ROLE_ZONES_CONFIG = {
       },
       {
         id: 'view-client-zone-3',
-        shortTitle: 'Vùng 3: Tạo Hợp đồng',
+        shortTitle: 'Tạo hợp đồng',
         title: 'Vùng 3: Khởi tạo Hợp đồng, Chia Milestone & Ký kết Số',
         icon: '✍️',
         tag: 'Smart Contract',
@@ -247,7 +251,7 @@ export const ROLE_ZONES_CONFIG = {
     zones: [
       {
         id: 'view-freelancer-zone-1',
-        shortTitle: 'Vùng 1: Nộp Bàn giao',
+        shortTitle: 'Bàn giao',
         title: 'Vùng 1: Nộp Bàn giao Sản phẩm (Git PR / Commit / Figma)',
         icon: '📤',
         tag: 'Proof SHA-256',
@@ -255,7 +259,7 @@ export const ROLE_ZONES_CONFIG = {
       },
       {
         id: 'view-freelancer-zone-2',
-        shortTitle: 'Vùng 2: Hợp đồng & Ký số',
+        shortTitle: 'Hợp đồng',
         title: 'Vùng 2: Danh sách Hợp đồng Đảm nhận & Ký Multi-Sig (2-of-3)',
         icon: '📂',
         tag: 'EIP-712 Sign',
@@ -263,7 +267,7 @@ export const ROLE_ZONES_CONFIG = {
       },
       {
         id: 'view-freelancer-zone-3',
-        shortTitle: 'Vùng 3: Rút Tiền Đa Kênh',
+        shortTitle: 'Rút tiền',
         title: 'Vùng 3: Rút Thù lao Đa Phương thức (Ngân hàng / Ví USDC-USDT)',
         icon: '🏦',
         tag: 'Instant Payout',
@@ -277,7 +281,7 @@ export const ROLE_ZONES_CONFIG = {
     zones: [
       {
         id: 'view-arbiter-zone-1',
-        shortTitle: 'Vùng 1: Phân xử Tranh chấp',
+        shortTitle: 'Tranh chấp',
         title: 'Vùng 1: Phân xử Tranh chấp & Chia Tỷ lệ Quỹ Linh hoạt',
         icon: '⚖️',
         tag: 'Split Settlement',
@@ -285,7 +289,7 @@ export const ROLE_ZONES_CONFIG = {
       },
       {
         id: 'view-arbiter-zone-2',
-        shortTitle: 'Vùng 2: Cổng Chứng cứ',
+        shortTitle: 'Chứng cứ',
         title: 'Vùng 2: Cổng Thu thập Chứng cứ & Giám sát Giao dịch',
         icon: '📎',
         tag: 'Evidence Portal',
@@ -293,7 +297,7 @@ export const ROLE_ZONES_CONFIG = {
       },
       {
         id: 'view-arbiter-zone-3',
-        shortTitle: 'Vùng 3: Sổ cái & Tín nhiệm',
+        shortTitle: 'Sổ cái & tín nhiệm',
         title: 'Vùng 3: Nhật ký Kiểm toán Bất biến & Điểm Tín nhiệm',
         icon: '🔒',
         tag: 'Immutable Log',
@@ -406,6 +410,45 @@ export function validateTopupAmount(rawAmount) {
 }
 
 /**
+ * Phân tầng tuân thủ AML/KYC theo hạn mức giao dịch VietQR / Web3.
+ */
+export function evaluateAmlKycTier(amount) {
+  const num = Number(amount) || 0;
+  if (num > 20000000) {
+    return {
+      tier: 'TIER_2_ENHANCED_KYC',
+      label: 'KYC Nâng cao (>20tr)',
+      requiresEnhancedReview: true
+    };
+  }
+  return {
+    tier: 'TIER_1_BASIC',
+    label: 'KYC Cơ bản',
+    requiresEnhancedReview: false
+  };
+}
+
+/**
+ * Circuit Breaker (Công tắc tạm dừng khẩn cấp Smart Vault) do Arbiter điều khiển.
+ */
+export function toggleVaultCircuitBreaker(state, paused, reason = 'Kiểm tra bảo mật định kỳ') {
+  state.vaultPaused = Boolean(paused);
+  const proof = computeProofHashAndCid(`circuit-breaker-${state.vaultPaused}-${Date.now()}`);
+  state.ledger.unshift({
+    id: `EV-${Math.floor(1000 + Math.random() * 9000)}`,
+    time: new Date().toLocaleTimeString('vi-VN'),
+    role: 'ARBITER',
+    type: state.vaultPaused ? 'Circuit Breaker: TẠM DỪNG VAULT' : 'Circuit Breaker: MỞ LẠI VAULT',
+    detail: state.vaultPaused
+      ? `Arbiter đã kích hoạt Circuit Breaker tạm khóa giải ngân (${reason}).`
+      : 'Arbiter đã tắt Circuit Breaker, Smart Vault hoạt động bình thường.',
+    amount: 0,
+    auditHash: proof.auditHash
+  });
+  return { ok: true, vaultPaused: state.vaultPaused };
+}
+
+/**
  * Gửi yêu cầu Nạp tiền qua mã VietQR của Hệ thống.
  * Tiền sẽ KHÔNG vào ví ngay, mà ở trạng thái PENDING_APPROVAL chờ Arbiter đối soát biến động số dư.
  */
@@ -414,6 +457,7 @@ export function submitClientTopup(state, { accountNumber, amount, method }) {
   if (!validation.valid) {
     return { ok: false, error: validation.error };
   }
+  const kycInfo = evaluateAmlKycTier(validation.amount);
   const isVietQR = /VietQR/i.test(method || '');
   const gatewayFee = isVietQR ? 0 : 15000;
   const netCredited = validation.amount - gatewayFee;
@@ -431,6 +475,8 @@ export function submitClientTopup(state, { accountNumber, amount, method }) {
     formatted: validation.formatted,
     gatewayFee,
     netCredited,
+    kycTier: kycInfo.tier,
+    kycLabel: kycInfo.label,
     method: method || 'VietQR Pro 24/7 (MB - TO VINH DUNG)',
     memo,
     status: 'PENDING_APPROVAL',
@@ -562,6 +608,7 @@ export function evaluateGuardrailCommand(commandString) {
 
 export function createInitialEscrowState() {
   return {
+    vaultPaused: false,
     clientBalance: 15000000,
     freelancerBalance: 8450000,
     platformFeesCollected: 320000,
@@ -781,26 +828,33 @@ export function requestContractRevision(state, contractId, reason) {
     };
   }
   const comment = (reason || '').trim() || 'Cần bổ sung tiêu chí DoD và cập nhật mã nguồn theo yêu cầu';
+  const scopeCheck = detectScopeCreepRisk(comment);
   contract.revisionsUsed += 1;
   contract.status = 'REVISION_REQUESTED';
   contract.ciVerified = false;
   contract.clientRevisionComment = comment;
+  contract.scopeCreepWarning = scopeCheck.hasScopeCreepRisk ? scopeCheck.warningMessage : null;
   contract.failedStepText = `Client yêu cầu chỉnh sửa (Lần ${contract.revisionsUsed}/${contract.maxRevisions}): "${comment}"`;
-  contract.aiRecommendation = `Khuyến nghị Seller cập nhật theo yêu cầu của Client: "${comment}" và nộp lại commit mới.`;
+  contract.aiRecommendation = scopeCheck.hasScopeCreepRisk
+    ? `${scopeCheck.warningMessage} Khuyến nghị Seller đối chiếu phạm vi gốc trước khi thực hiện.`
+    : `Khuyến nghị Seller cập nhật theo yêu cầu của Client: "${comment}" và nộp lại commit mới.`;
   const proof = computeProofHashAndCid(`${contractId}-rev-${contract.revisionsUsed}-${comment}`);
   state.ledger.unshift({
     id: `EV-${Math.floor(1000 + Math.random() * 9000)}`,
     time: new Date().toLocaleTimeString('vi-VN'),
     role: 'CLIENT',
     type: `Yêu cầu Chỉnh sửa (${contract.revisionsUsed}/${contract.maxRevisions})`,
-    detail: `[${contract.id}] Mô tả yêu cầu sửa: "${comment}"`,
+    detail: `[${contract.id}] Mô tả yêu cầu sửa: "${comment}"${scopeCheck.hasScopeCreepRisk ? ' [Cảnh báo Scope Creep]' : ''}`,
     amount: contract.amount,
     auditHash: proof.auditHash
   });
-  return { ok: true, contract };
+  return { ok: true, contract, scopeCreepRisk: scopeCheck };
 }
 
 export function releasePartialMilestone(state, contractId, percent = 50) {
+  if (state.vaultPaused) {
+    return { ok: false, error: '⚠️ Circuit Breaker đang bật: Tạm dừng giải ngân Smart Vault để kiểm tra an toàn.' };
+  }
   const contract = state.contracts.find((c) => c.id === contractId);
   if (!contract) return { ok: false, error: 'Không tìm thấy hợp đồng.' };
   const pct = Math.min(100, Math.max(10, Number(percent) || 50));
@@ -839,6 +893,9 @@ export function releasePartialMilestone(state, contractId, percent = 50) {
 }
 
 export function triggerTimelockAutoRelease(state, contractId) {
+  if (state.vaultPaused) {
+    return { ok: false, error: '⚠️ Circuit Breaker đang bật: Tạm dừng giải ngân Smart Vault để kiểm tra an toàn.' };
+  }
   const contract = state.contracts.find((c) => c.id === contractId);
   if (!contract || contract.vaultFrozen) {
     return { ok: false, error: 'Hợp đồng không hợp lệ hoặc đang bị đóng băng tranh chấp.' };
@@ -1060,6 +1117,7 @@ export function initBrowserApp() {
   let state = createInitialEscrowState();
   let currentLoginRole = 'client';
   let activePopupContractId = null;
+  let bankDashboard;
 
   const walletCardClientEl = document.getElementById('wallet-card-client');
   const walletCardFreelancerEl = document.getElementById('wallet-card-freelancer');
@@ -1108,6 +1166,13 @@ export function initBrowserApp() {
   const topupNotificationItemsContainerEl = document.getElementById('topup-notification-items-container');
   const topupNotificationFeedbackEl = document.getElementById('topup-notification-feedback');
 
+  // Onboarding Non-tech & Circuit Breaker Bảo mật Vault
+  const btnToggleOnboardingGuide = document.getElementById('btn-toggle-onboarding-guide');
+  const btnCloseOnboardingGuide = document.getElementById('btn-close-onboarding-guide');
+  const nonTechOnboardingStripEl = document.getElementById('non-tech-onboarding-strip');
+  const btnArbiterCircuitBreaker = document.getElementById('btn-arbiter-circuit-breaker');
+  const vaultSecurityPillEl = document.getElementById('vault-security-pill');
+
   // Popup Modal Xác thực Mật khẩu Arbiter (123456)
   const arbiterAuthModal = document.getElementById('arbiter-auth-modal');
   const arbiterAuthForm = document.getElementById('arbiter-auth-form');
@@ -1148,13 +1213,13 @@ export function initBrowserApp() {
         }
       }
       if (apiSyncIndicatorEl) {
-        apiSyncIndicatorEl.textContent = '● API Live Connected';
-        apiSyncIndicatorEl.className = 'pill pill-emerald';
+        apiSyncIndicatorEl.textContent = '● Đã kết nối dữ liệu';
+        apiSyncIndicatorEl.className = 'bank-connection is-connected';
       }
     } catch {
       if (apiSyncIndicatorEl) {
-        apiSyncIndicatorEl.textContent = '● Local State Active';
-        apiSyncIndicatorEl.className = 'pill pill-mono';
+        apiSyncIndicatorEl.textContent = '● Đang dùng dữ liệu cục bộ';
+        apiSyncIndicatorEl.className = 'bank-connection';
       }
     }
   }
@@ -1294,6 +1359,7 @@ export function initBrowserApp() {
   }
 
   function openFullscreenZone(zoneId) {
+    bankDashboard?.setPage(zoneId);
     const roleCfg = ROLE_ZONES_CONFIG[currentLoginRole] || ROLE_ZONES_CONFIG.client;
     const allViews = document.querySelectorAll('.zone-content-view');
 
@@ -1311,7 +1377,7 @@ export function initBrowserApp() {
 
     const matchedZone = roleCfg.zones.find((z) => z.id === zoneId) || roleCfg.zones[0];
     if (fullscreenStageTitleEl) {
-      fullscreenStageTitleEl.textContent = `${matchedZone.icon} ${matchedZone.title}`;
+      fullscreenStageTitleEl.textContent = document.getElementById('bank-page-title')?.textContent || matchedZone.shortTitle;
     }
 
     if (fullscreenQuickTabsEl) {
@@ -1915,6 +1981,28 @@ export function initBrowserApp() {
         .join('');
     }
 
+    if (vaultSecurityPillEl) {
+      if (state.vaultPaused) {
+        vaultSecurityPillEl.className = 'pill pill-rose';
+        vaultSecurityPillEl.textContent = '⛔ Circuit Breaker: TẠM DỪNG GIẢI NGÂN';
+      } else {
+        vaultSecurityPillEl.className = 'pill pill-emerald';
+        vaultSecurityPillEl.textContent = '🔒 Multi-Sig 2-of-3 • Non-Custodial AI';
+      }
+    }
+
+    if (btnArbiterCircuitBreaker) {
+      btnArbiterCircuitBreaker.hidden = currentLoginRole !== 'arbiter';
+      btnArbiterCircuitBreaker.textContent = state.vaultPaused
+        ? '🔓 Mở lại Smart Vault'
+        : '🛡️ Circuit Breaker: Đang mở';
+      btnArbiterCircuitBreaker.className = state.vaultPaused
+        ? 'btn btn-emerald btn-xs'
+        : 'btn btn-secondary btn-xs';
+    }
+
+    bankDashboard?.render();
+
     // Render Vùng Thông báo Duyệt Tiền Nạp (VietQR Pro 24/7)
     renderTopupApprovalNotificationZone();
 
@@ -1987,6 +2075,9 @@ export function initBrowserApp() {
                 <span class="pill pill-amber" style="font-weight:700;">⏳ Chờ Arbiter duyệt qua VietQR</span>
               </div>`;
 
+            const kycInfo = t.kycLabel ? { label: t.kycLabel, requiresEnhancedReview: t.kycTier === 'TIER_2_ENHANCED_KYC' } : evaluateAmlKycTier(t.amount);
+            const kycPill = `<span class="pill ${kycInfo.requiresEnhancedReview ? 'pill-amber' : 'pill-emerald'}">${kycInfo.label}</span>`;
+
             return `
             <div class="topup-notification-item">
               <div>
@@ -1995,6 +2086,7 @@ export function initBrowserApp() {
                   <strong style="color:var(--accent-blue);font-size:0.95rem;">+${formatVND(t.amount)}</strong>
                   <span class="pill pill-blue">MB: 0898143615 • TO VINH DUNG</span>
                   <span class="pill pill-mono" style="background:#F1F5F9;">Memo: ${t.memo}</span>
+                  ${kycPill}
                 </div>
                 <div style="font-size:0.72rem;color:var(--text-secondary);margin-top:0.25rem;">
                   Nguồn nạp: <strong>${t.clientAccount}</strong> • Thời gian: ${t.time} • Phương thức: ${t.method}
@@ -2036,6 +2128,19 @@ export function initBrowserApp() {
     renderAllTransactionUI();
     return true;
   }
+
+  bankDashboard = createBankDashboard({
+    openZone: openFullscreenZone,
+    openContract: openTransactionPopup,
+    getState: () => state,
+    getRole: () => currentLoginRole
+  });
+  document.getElementById('bank-guide-shortcut')?.addEventListener('click', () => {
+    if (nonTechOnboardingStripEl) {
+      nonTechOnboardingStripEl.hidden = false;
+      nonTechOnboardingStripEl.scrollIntoView({behavior:'smooth', block:'start'});
+    }
+  });
 
   // Khởi tạo giao diện & đồng bộ từ API
   renderAllTransactionUI();
@@ -2166,6 +2271,26 @@ export function initBrowserApp() {
       btnToggleNotifyBody.textContent = isHidden ? 'Thu gọn ▲' : 'Mở rộng ▼';
     });
   }
+
+  btnToggleOnboardingGuide?.addEventListener('click', () => {
+    if (nonTechOnboardingStripEl) {
+      nonTechOnboardingStripEl.hidden = !nonTechOnboardingStripEl.hidden;
+    }
+  });
+
+  btnCloseOnboardingGuide?.addEventListener('click', () => {
+    if (nonTechOnboardingStripEl) {
+      nonTechOnboardingStripEl.hidden = true;
+    }
+  });
+
+  btnArbiterCircuitBreaker?.addEventListener('click', async () => {
+    if (currentLoginRole !== 'arbiter') return;
+    const nextPaused = !state.vaultPaused;
+    toggleVaultCircuitBreaker(state, nextPaused, 'Arbiter kích hoạt từ bảng điều khiển');
+    await syncStateWithServer(true);
+    renderAllTransactionUI();
+  });
 
   // Sự kiện Xác thực Mật khẩu Đăng nhập Trọng tài (Arbiter: 123456)
   if (arbiterAuthForm) {
@@ -2473,6 +2598,8 @@ export function initBrowserApp() {
   const contractCriteriaInput = document.getElementById('contract-criteria-input');
   const contractSigInput = document.getElementById('contract-sig-input');
   const clientContractFeedbackEl = document.getElementById('client-contract-feedback');
+  const refineCriteriaBtn = document.getElementById('btn-refine-criteria');
+  const refinedComparisonBoxEl = document.getElementById('refined-criteria-comparison-box');
   const newContractBesideBtn = document.getElementById('btn-new-contract-beside');
   const resetNewContractBtn = document.getElementById('btn-reset-new-contract');
   const jumpNewContractBtn = document.getElementById('btn-jump-new-contract');
@@ -2487,11 +2614,127 @@ export function initBrowserApp() {
     }
     if (contractAmountInput) contractAmountInput.value = '3000000';
     if (contractCriteriaInput) {
-      contractCriteriaInput.value = 'Coverage > 80%, API /api/payment < 200ms, Xuất đủ 5 màn hình Figma';
+      contractCriteriaInput.value = 'API chạy nhanh\nCode không lỗi\nGiao diện đẹp';
     }
     if (clientContractFeedbackEl) clientContractFeedbackEl.hidden = true;
     if (clientAgentFailureBoxEl) clientAgentFailureBoxEl.hidden = true;
+    if (refinedComparisonBoxEl) refinedComparisonBoxEl.hidden = true;
   }
+
+  refineCriteriaBtn?.addEventListener('click', async () => {
+    const contractTitle = (contractTitleInput?.value || '').trim() || 'Xây dựng API Thanh toán & Tích hợp Webhook';
+    const rawLines = String(contractCriteriaInput?.value || '')
+      .split(/\r?\n|;/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const rawCriteria = rawLines.length > 0 ? rawLines : ['API chạy nhanh', 'Code không lỗi', 'Giao diện đẹp'];
+
+    const origBtnText = refineCriteriaBtn.textContent;
+    refineCriteriaBtn.disabled = true;
+    refineCriteriaBtn.textContent = '⏳ Agent đang chuẩn hóa...';
+    if (refinedComparisonBoxEl) {
+      refinedComparisonBoxEl.hidden = false;
+      refinedComparisonBoxEl.innerHTML = '<div>⏳ AI Agent đang đối chiếu Historical Baselines và chuẩn hóa tiêu chí nghiệm thu...</div>';
+    }
+
+    try {
+      let data;
+      try {
+        data = await callDynamicApi('/api/agreements/refine-criteria', 'POST', { contractTitle, rawCriteria });
+      } catch {
+        data = {
+          contractTitle,
+          totalWeight: 100,
+          criteria: rawCriteria.map((text, idx) => ({
+            id: `OBJ-0${idx + 1}`,
+            originalText: text,
+            type: /đẹp|giao diện/i.test(text) ? 'SUBJECTIVE' : 'DETERMINISTIC',
+            metric: /nhanh/i.test(text) ? 'api_latency_ms' : (/đẹp|giao diện/i.test(text) ? null : 'unit_test_pass_rate'),
+            operator: /nhanh/i.test(text) ? '<=' : (/đẹp|giao diện/i.test(text) ? null : '=='),
+            expectedValue: /nhanh/i.test(text) ? 250 : (/đẹp|giao diện/i.test(text) ? null : 100),
+            requiresHitl: /đẹp|giao diện/i.test(text),
+            weight: idx === rawCriteria.length - 1 ? 100 - Math.floor(100 / rawCriteria.length) * (rawCriteria.length - 1) : Math.floor(100 / rawCriteria.length),
+            clarifiedDescription: /nhanh/i.test(text)
+              ? 'Thời gian phản hồi API đạt api_latency_ms <= 250ms'
+              : (/đẹp|giao diện/i.test(text) ? `Đánh giá cảm quan (HITL): ${text}` : 'Tỷ lệ vượt qua kiểm thử tự động đạt unit_test_pass_rate == 100%')
+          }))
+        };
+      }
+
+      const items = Array.isArray(data?.criteria) ? data.criteria : [];
+      if (!refinedComparisonBoxEl) return;
+
+      const rowsHtml = items
+        .map((c, idx) => {
+          const metricBadge = c.type === 'DETERMINISTIC'
+            ? `<span class="pill pill-emerald" style="font-size:0.7rem;">DETERMINISTIC: ${c.metric} ${c.operator} ${c.expectedValue}</span>`
+            : `<span class="pill pill-amber" style="font-size:0.7rem;">SUBJECTIVE (HITL duyệt tay)</span>`;
+          return `
+            <tr style="border-top:1px solid var(--border-color);">
+              <td style="padding:0.5rem;vertical-align:top;width:34%;font-size:0.8rem;color:var(--text-secondary);">
+                <strong>#${idx + 1}.</strong> "${c.originalText}"
+              </td>
+              <td style="padding:0.5rem;vertical-align:top;">
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:0.4rem;margin-bottom:0.3rem;flex-wrap:wrap;">
+                  ${metricBadge}
+                  <label style="font-size:0.75rem;display:inline-flex;align-items:center;gap:0.25rem;">
+                    Trọng số (%):
+                    <input type="number" class="form-input refined-weight-input" data-idx="${idx}" value="${c.weight}" min="1" max="100" style="width:64px;padding:0.15rem 0.35rem;min-height:28px;font-size:0.78rem;" />
+                  </label>
+                </div>
+                <input type="text" class="form-input refined-desc-input" data-idx="${idx}" data-metric="${c.type === 'DETERMINISTIC' ? `${c.metric} ${c.operator} ${c.expectedValue}` : 'HITL'}" value="${String(c.clarifiedDescription || '').replace(/"/g, '&quot;')}" style="font-size:0.8rem;padding:0.3rem 0.5rem;min-height:32px;" />
+              </td>
+            </tr>
+          `;
+        })
+        .join('');
+
+      refinedComparisonBoxEl.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.45rem;flex-wrap:wrap;gap:0.4rem;">
+          <strong style="font-size:0.84rem;">🪄 Bảng đối chiếu Chuẩn hóa Tiêu chí (RAG Historical Baselines)</strong>
+          <span class="pill pill-blue" style="font-size:0.72rem;">Tổng trọng số: 100%</span>
+        </div>
+        <div style="overflow-x:auto;">
+          <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--border-color);border-radius:6px;">
+            <thead>
+              <tr style="background:var(--bg-secondary);font-size:0.75rem;text-align:left;">
+                <th style="padding:0.45rem 0.5rem;">Tiêu chí gốc (Mơ hồ)</th>
+                <th style="padding:0.45rem 0.5rem;">Tiêu chí Agent đề xuất sửa (Đo lường được + Metric + Trọng số %)</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>
+        <div style="margin-top:0.55rem;display:flex;justify-content:flex-end;gap:0.5rem;">
+          <button type="button" class="btn btn-primary btn-xs" id="btn-apply-refined-table">
+            ✓ Áp dụng vào Tiêu chí Nghiệm thu trước khi Khóa Baseline
+          </button>
+        </div>
+      `;
+
+      document.getElementById('btn-apply-refined-table')?.addEventListener('click', () => {
+        const descInputs = [...refinedComparisonBoxEl.querySelectorAll('.refined-desc-input')];
+        const weightInputs = [...refinedComparisonBoxEl.querySelectorAll('.refined-weight-input')];
+        const combined = descInputs.map((el, i) => {
+          const w = Number(weightInputs[i]?.value || 0);
+          const metricTag = el.getAttribute('data-metric') || '';
+          return `[${w}% | ${metricTag}] ${el.value.trim()}`;
+        });
+        if (contractCriteriaInput && combined.length > 0) {
+          contractCriteriaInput.value = combined.join('\n');
+        }
+        if (clientAgentFailureBoxEl) clientAgentFailureBoxEl.hidden = true;
+        if (clientContractFeedbackEl) {
+          clientContractFeedbackEl.hidden = false;
+          clientContractFeedbackEl.className = 'alert-box alert-success';
+          clientContractFeedbackEl.textContent = '✓ Đã áp dụng bộ tiêu chí nghiệm thu chuẩn hóa (Tổng trọng số 100%). Bạn có thể ký kết hợp đồng ngay.';
+        }
+      });
+    } finally {
+      refineCriteriaBtn.disabled = false;
+      refineCriteriaBtn.textContent = origBtnText;
+    }
+  });
 
   newContractBesideBtn?.addEventListener('click', prepareNewContractForm);
   resetNewContractBtn?.addEventListener('click', prepareNewContractForm);
@@ -2536,9 +2779,51 @@ export function initBrowserApp() {
         return;
       }
 
-      // Kiểm tra xem tiêu chí nghiệm thu có định lượng (số %, ms, màn hình, schema...) hay đang mơ hồ ("đẹp, mượt")
-      const hasMeasurableMetric = /\d+|%|ms|figma|schema|coverage|hash/i.test(rawCriteria);
-      if (!hasMeasurableMetric) {
+      const submitBtn = createContractForm.querySelector('button[type="submit"]');
+      const originalBtnHtml = submitBtn ? submitBtn.innerHTML : '';
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = '⏳ Agent đang phân tích...';
+      }
+      if (clientAgentFailureBoxEl) clientAgentFailureBoxEl.hidden = true;
+      if (clientContractFeedbackEl) {
+        clientContractFeedbackEl.hidden = false;
+        clientContractFeedbackEl.className = 'alert-box';
+        clientContractFeedbackEl.textContent = '⏳ AI Agent đang phân tích hợp đồng và chuẩn hóa tiêu chí nghiệm thu...';
+      }
+
+      try {
+        // Kiểm tra xem tiêu chí nghiệm thu có định lượng (số %, ms, màn hình, schema...) hay đang mơ hồ ("đẹp, mượt")
+        const hasMeasurableMetric = /\d+|%|ms|figma|schema|coverage|hash/i.test(rawCriteria);
+        if (!hasMeasurableMetric) {
+          let decomp;
+          try {
+            decomp = await callDynamicApi('/api/agents/scope-decompose', 'POST', { brief: title });
+          } catch {
+            decomp = runScopeDecomposerAgent(title);
+          }
+
+          if (clientContractFeedbackEl) clientContractFeedbackEl.hidden = true;
+          if (clientAgentFailureBoxEl) {
+            const recommendedCriteria = 'Coverage > 80%, API /api/payment < 200ms, Xuất đủ 5 màn hình Figma chuẩn';
+            clientAgentFailureBoxEl.hidden = false;
+            clientAgentFailureBoxEl.innerHTML = `
+              <div><strong>⚠️ Không đạt bước Kiểm tra Tiêu chí Nghiệm thu (Brief mơ hồ):</strong> Tiêu chí <em>"${rawCriteria || 'Trống'}"</em> thiếu thông số kỹ thuật định lượng, dễ dẫn đến tranh chấp.</div>
+              <div style="margin-top:0.25rem;"><strong>💡 Khuyến nghị của AI Agent:</strong> Chuẩn hóa thành Checklist định lượng: <code>${recommendedCriteria}</code> (Hash: <code>${decomp.checklistHash}</code>).</div>
+              <div style="margin-top:0.45rem;">
+                <button type="button" class="btn btn-primary btn-xs" id="btn-apply-agent-criteria" data-rec="${recommendedCriteria}">
+                  ✓ Áp dụng Khuyến nghị của Agent &amp; Tiếp tục
+                </button>
+              </div>
+            `;
+            document.getElementById('btn-apply-agent-criteria')?.addEventListener('click', () => {
+              if (contractCriteriaInput) contractCriteriaInput.value = recommendedCriteria;
+              clientAgentFailureBoxEl.hidden = true;
+            });
+          }
+          return;
+        }
+
         let decomp;
         try {
           decomp = await callDynamicApi('/api/agents/scope-decompose', 'POST', { brief: title });
@@ -2546,95 +2831,71 @@ export function initBrowserApp() {
           decomp = runScopeDecomposerAgent(title);
         }
 
-        if (clientContractFeedbackEl) clientContractFeedbackEl.hidden = true;
-        if (clientAgentFailureBoxEl) {
-          const recommendedCriteria = 'Coverage > 80%, API /api/payment < 200ms, Xuất đủ 5 màn hình Figma chuẩn';
-          clientAgentFailureBoxEl.hidden = false;
-          clientAgentFailureBoxEl.innerHTML = `
-            <div><strong>⚠️ Không đạt bước Kiểm tra Tiêu chí Nghiệm thu (Brief mơ hồ):</strong> Tiêu chí <em>"${rawCriteria || 'Trống'}"</em> thiếu thông số kỹ thuật định lượng, dễ dẫn đến tranh chấp.</div>
-            <div style="margin-top:0.25rem;"><strong>💡 Khuyến nghị của AI Agent:</strong> Chuẩn hóa thành Checklist định lượng: <code>${recommendedCriteria}</code> (Hash: <code>${decomp.checklistHash}</code>).</div>
-            <div style="margin-top:0.45rem;">
-              <button type="button" class="btn btn-primary btn-xs" id="btn-apply-agent-criteria" data-rec="${recommendedCriteria}">
-                ✓ Áp dụng Khuyến nghị của Agent &amp; Tiếp tục
-              </button>
-            </div>
-          `;
-          document.getElementById('btn-apply-agent-criteria')?.addEventListener('click', () => {
-            if (contractCriteriaInput) contractCriteriaInput.value = recommendedCriteria;
-            clientAgentFailureBoxEl.hidden = true;
-          });
+        const [inspDays, maxRev] = (contractInspectionInput?.value || '3|3').split('|').map(Number);
+        const milestoneCount = Number(contractMilestonesInput?.value || 2);
+        const sigType = contractSigInput?.value || 'EIP-712 Wallet Sig';
+        const newId = customCode && !state.contracts.some((c) => c.id === customCode)
+          ? customCode
+          : `ESC-${101 + state.contracts.length}`;
+
+        state.clientBalance -= validation.amount;
+        state.reputation.client.totalVolume += validation.amount;
+
+        state.contracts.unshift({
+          id: newId,
+          title,
+          freelancer,
+          amount: validation.amount,
+          releasedSoFar: 0,
+          status: 'IN_PROGRESS',
+          vaultAddress: `0xVault${101 + state.contracts.length}...${decomp.onChainAnchorTx.slice(2, 6).toUpperCase()}`,
+          acceptanceCriteria: rawCriteria,
+          signatureScheme: `${sigType} (${decomp.onChainAnchorTx})`,
+          signatures: { client: true, freelancer: false, arbiter: false },
+          milestones: buildContractMilestones(validation.amount, milestoneCount),
+          inspectionDays: inspDays,
+          timelockRemaining: `${inspDays} ngày sau khi nộp`,
+          revisionsUsed: 0,
+          maxRevisions: maxRev,
+          deliverableUrl: '',
+          commitHash: '',
+          deliverableNote: '',
+          proofHash: decomp.checklistHash,
+          ipfsCid: '',
+          ciVerified: true,
+          failedStepText: null,
+          aiRecommendation: null,
+          vaultFrozen: false,
+          disputeReason: null,
+          evidences: []
+        });
+
+        state.ledger.unshift({
+          id: `EV-${Math.floor(1000 + Math.random() * 9000)}`,
+          time: new Date().toLocaleTimeString('vi-VN'),
+          role: 'CLIENT',
+          type: 'Khởi tạo Hợp đồng & Khóa Vault',
+          detail: `Mã HĐ [${newId}] "${title}" (${validation.formatted})`,
+          amount: validation.amount,
+          auditHash: decomp.onChainAnchorTx
+        });
+
+        if (contractCodeInput) {
+          contractCodeInput.value = `ESC-${101 + state.contracts.length}`;
         }
-        return;
-      }
 
-      if (clientAgentFailureBoxEl) clientAgentFailureBoxEl.hidden = true;
-
-      let decomp;
-      try {
-        decomp = await callDynamicApi('/api/agents/scope-decompose', 'POST', { brief: title });
-      } catch {
-        decomp = runScopeDecomposerAgent(title);
-      }
-
-      const [inspDays, maxRev] = (contractInspectionInput?.value || '3|3').split('|').map(Number);
-      const milestoneCount = Number(contractMilestonesInput?.value || 2);
-      const sigType = contractSigInput?.value || 'EIP-712 Wallet Sig';
-      const newId = customCode && !state.contracts.some((c) => c.id === customCode)
-        ? customCode
-        : `ESC-${101 + state.contracts.length}`;
-
-      state.clientBalance -= validation.amount;
-      state.reputation.client.totalVolume += validation.amount;
-
-      state.contracts.unshift({
-        id: newId,
-        title,
-        freelancer,
-        amount: validation.amount,
-        releasedSoFar: 0,
-        status: 'IN_PROGRESS',
-        vaultAddress: `0xVault${101 + state.contracts.length}...${decomp.onChainAnchorTx.slice(2, 6).toUpperCase()}`,
-        acceptanceCriteria: rawCriteria,
-        signatureScheme: `${sigType} (${decomp.onChainAnchorTx})`,
-        signatures: { client: true, freelancer: false, arbiter: false },
-        milestones: buildContractMilestones(validation.amount, milestoneCount),
-        inspectionDays: inspDays,
-        timelockRemaining: `${inspDays} ngày sau khi nộp`,
-        revisionsUsed: 0,
-        maxRevisions: maxRev,
-        deliverableUrl: '',
-        commitHash: '',
-        deliverableNote: '',
-        proofHash: decomp.checklistHash,
-        ipfsCid: '',
-        ciVerified: true,
-        failedStepText: null,
-        aiRecommendation: null,
-        vaultFrozen: false,
-        disputeReason: null,
-        evidences: []
-      });
-
-      state.ledger.unshift({
-        id: `EV-${Math.floor(1000 + Math.random() * 9000)}`,
-        time: new Date().toLocaleTimeString('vi-VN'),
-        role: 'CLIENT',
-        type: 'Khởi tạo Hợp đồng & Khóa Vault',
-        detail: `Mã HĐ [${newId}] "${title}" (${validation.formatted})`,
-        amount: validation.amount,
-        auditHash: decomp.onChainAnchorTx
-      });
-
-      if (contractCodeInput) {
-        contractCodeInput.value = `ESC-${101 + state.contracts.length}`;
-      }
-
-      await syncStateWithServer(true);
-      renderAllTransactionUI();
-      if (clientContractFeedbackEl) {
-        clientContractFeedbackEl.hidden = false;
-        clientContractFeedbackEl.className = 'alert-box alert-success';
-        clientContractFeedbackEl.textContent = `✓ Đã khởi tạo hợp đồng Mã [${newId}] và khóa ${validation.formatted} vào Multi-Sig Vault!`;
+        await syncStateWithServer(true);
+        renderAllTransactionUI();
+        if (clientContractFeedbackEl) {
+          clientContractFeedbackEl.hidden = false;
+          clientContractFeedbackEl.className = 'alert-box alert-success';
+          clientContractFeedbackEl.textContent = `✓ Đã khởi tạo hợp đồng Mã [${newId}] và khóa ${validation.formatted} vào Multi-Sig Vault!`;
+        }
+      } finally {
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.innerHTML = originalBtnHtml;
+        }
       }
     });
   }
@@ -2647,6 +2908,135 @@ export function initBrowserApp() {
   const simScenarioSelect = document.getElementById('freelancer-sim-scenario');
   const deliverableNoteInput = document.getElementById('freelancer-deliverable-note');
   const freelancerSubmitFeedbackEl = document.getElementById('freelancer-submit-feedback');
+  const verifyGithubMilestoneBtn = document.getElementById('btn-verify-github-milestone');
+  const githubVerificationReportBoxEl = document.getElementById('github-verification-report-box');
+  let lastVerifiedGithubKey = null;
+  let lastVerifiedGithubReport = null;
+
+  verifyGithubMilestoneBtn?.addEventListener('click', async () => {
+    const contractId = freelancerSelectEl?.value || state.contracts[0]?.id || 'ESC-101';
+    const contract = state.contracts.find((c) => c.id === contractId);
+    const repoUrl = (deliverableUrlInput?.value || '').trim();
+    const commitSha = (commitInput?.value || '').trim() || 'HEAD';
+
+    if (!isValidGitHubUrl(repoUrl)) {
+      lastVerifiedGithubKey = null;
+      lastVerifiedGithubReport = null;
+      if (freelancerSubmitFeedbackEl) {
+        freelancerSubmitFeedbackEl.hidden = false;
+        freelancerSubmitFeedbackEl.className = 'alert-box alert-error';
+        freelancerSubmitFeedbackEl.textContent = `✖ Link "${repoUrl}" không phải định dạng GitHub hợp lệ (https://github.com/owner/repo).`;
+      }
+      return;
+    }
+
+    const origBtnText = verifyGithubMilestoneBtn.textContent;
+    verifyGithubMilestoneBtn.disabled = true;
+    verifyGithubMilestoneBtn.textContent = '⏳ Agent đang kiểm tra GitHub...';
+
+    if (githubVerificationReportBoxEl) {
+      githubVerificationReportBoxEl.hidden = false;
+      githubVerificationReportBoxEl.innerHTML =
+        '<div>⏳ AI Agent đang lấy changedFiles từ GitHub API, clone mã nguồn vào Sandbox và chạy kiểm thử theo Baseline...</div>';
+    }
+
+    try {
+      const res = await callDynamicApi(`/api/milestones/${encodeURIComponent(contractId)}/verify-github`, 'POST', {
+        agreementId: contractId,
+        contractTitle: contract?.title || '',
+        acceptanceCriteria: contract?.acceptanceCriteria || '',
+        repoUrl,
+        commitSha,
+        testCommand: 'node --test'
+      });
+
+      if (!githubVerificationReportBoxEl || !res?.evaluation) return;
+      const ev = res.evaluation;
+      const sb = res.sandbox || {};
+      const gh = res.github || {};
+
+      if (!ev.blocked && gh.validUrl !== false) {
+        lastVerifiedGithubKey = `${contractId}|${repoUrl}|${commitSha}`;
+        lastVerifiedGithubReport = res;
+        if (freelancerSubmitFeedbackEl) {
+          freelancerSubmitFeedbackEl.hidden = false;
+          freelancerSubmitFeedbackEl.className = 'alert-box alert-success';
+          freelancerSubmitFeedbackEl.textContent = `✓ Đã kiểm tra GitHub cho [${contractId}]. Bạn đã đủ điều kiện bấm "📤 Gửi Bàn giao & Kiểm tra Nghiệm thu".`;
+        }
+      } else {
+        lastVerifiedGithubKey = null;
+        lastVerifiedGithubReport = null;
+      }
+
+      const critRows = (ev.deterministicResults || [])
+        .map(
+          (r) => `
+          <tr style="border-top:1px solid var(--border-color);">
+            <td style="padding:0.4rem 0.5rem;font-family:var(--font-mono);font-size:0.76rem;">${r.id} (${r.metric})</td>
+            <td style="padding:0.4rem 0.5rem;font-size:0.76rem;">Thực tế: <code>${r.actualValue}</code> | Yêu cầu: <code>${r.operator} ${r.expectedValue}</code></td>
+            <td style="padding:0.4rem 0.5rem;font-size:0.76rem;">${r.weight}%</td>
+            <td style="padding:0.4rem 0.5rem;">
+              <span class="pill ${r.passed ? 'pill-emerald' : 'pill-rose'}" style="font-size:0.7rem;">${r.passed ? '✓ PASS' : '✖ FAIL'}</span>
+            </td>
+          </tr>`
+        )
+        .join('');
+
+      const hitlRows = (ev.pendingHitlCriteria || [])
+        .map(
+          (h) => `
+          <tr style="border-top:1px solid var(--border-color);">
+            <td style="padding:0.4rem 0.5rem;font-family:var(--font-mono);font-size:0.76rem;">${h.id} (SUBJECTIVE)</td>
+            <td style="padding:0.4rem 0.5rem;font-size:0.76rem;">${h.description}</td>
+            <td style="padding:0.4rem 0.5rem;font-size:0.76rem;">${h.weight}%</td>
+            <td style="padding:0.4rem 0.5rem;"><span class="pill pill-amber" style="font-size:0.7rem;">⏳ Chờ HITL duyệt</span></td>
+          </tr>`
+        )
+        .join('');
+
+      const violationAlert =
+        Array.isArray(ev.forbiddenViolations) && ev.forbiddenViolations.length > 0
+          ? `<div class="alert-box alert-error" style="margin-bottom:0.5rem;">🚨 <strong>Vi phạm Forbidden Paths:</strong> ${ev.forbiddenViolations.map((v) => `${v.file} (${v.matchedRule})`).join(', ')}</div>`
+          : '';
+
+      githubVerificationReportBoxEl.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;margin-bottom:0.5rem;flex-wrap:wrap;">
+          <strong style="font-size:0.84rem;">🔍 Báo cáo Kiểm tra GitHub &amp; Đối chiếu Baseline [${contractId}]</strong>
+          <span class="pill ${ev.recommendation === 'REQUEST_REVISION' || ev.blocked ? 'pill-rose' : 'pill-emerald'}" style="font-size:0.72rem;">
+            Đề xuất: ${ev.recommendation} (Điểm kỹ thuật: ${ev.deterministicScore}%)
+          </span>
+        </div>
+        ${violationAlert}
+        <div style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:0.45rem;">
+          Repo: <code>${gh.owner || '-'}/${gh.repo || '-'}</code> • Commit: <code>${String(gh.commitSha || commitSha).slice(0, 10)}</code> • Thời gian chạy Sandbox: <strong>${sb.executionTimeMs || 0}ms</strong> • Files: <strong>${sb.deliveredFilesCount || 0}</strong> • Report Hash: <code>${String(res.testReportHash || '').slice(0, 16)}…</code>
+        </div>
+        <div style="overflow-x:auto;margin-bottom:0.5rem;">
+          <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--border-color);border-radius:6px;">
+            <thead>
+              <tr style="background:var(--bg-secondary);font-size:0.74rem;text-align:left;">
+                <th style="padding:0.4rem 0.5rem;">Tiêu chí / Metric</th>
+                <th style="padding:0.4rem 0.5rem;">Đối chiếu Giá trị</th>
+                <th style="padding:0.4rem 0.5rem;">Trọng số</th>
+                <th style="padding:0.4rem 0.5rem;">Kết quả</th>
+              </tr>
+            </thead>
+            <tbody>${critRows}${hitlRows}</tbody>
+          </table>
+        </div>
+        <details open>
+          <summary style="font-size:0.76rem;font-weight:700;cursor:pointer;margin-bottom:0.25rem;">🖥 Log chạy kiểm thử từ GitHub Sandbox (${sb.testCommand || 'node --test'})</summary>
+          <pre style="background:#0F172A;color:#F8FAFC;padding:0.55rem;border-radius:6px;font-size:0.72rem;max-height:180px;overflow:auto;white-space:pre-wrap;">${String(sb.testLog || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}</pre>
+        </details>
+      `;
+    } catch (err) {
+      if (githubVerificationReportBoxEl) {
+        githubVerificationReportBoxEl.innerHTML = `<div style="color:var(--accent-rose);">✖ Lỗi khi kiểm tra GitHub: ${err.message}</div>`;
+      }
+    } finally {
+      verifyGithubMilestoneBtn.disabled = false;
+      verifyGithubMilestoneBtn.textContent = origBtnText;
+    }
+  });
 
   freelancerSelectEl?.addEventListener('change', () => {
     const revBox = document.getElementById('freelancer-contract-revision-box');
@@ -2680,76 +3070,110 @@ export function initBrowserApp() {
       if (!contract) return;
 
       const url = (deliverableUrlInput?.value || '').trim();
-      const commit = (commitInput?.value || '').trim() || 'commit#9f8c2a1';
+      const rawCommit = (commitInput?.value || '').trim();
+      const commit = rawCommit || 'commit#9f8c2a1';
       const note = (deliverableNoteInput?.value || '').trim();
       const scenario = simScenarioSelect?.value || 'PASS_100';
 
-      let report;
-      try {
-        report = await callDynamicApi('/api/agents/verify-assess', 'POST', {
-          submission: { deliverableUrl: url, commitHash: commit, deliverableNote: note },
-          scenario
-        });
-      } catch {
-        report = runAutonomousVerificationAndAssessor(
-          { deliverableUrl: url, commitHash: commit, deliverableNote: note },
-          scenario
-        );
-      }
-
-      const failedStep = report.toolchainSteps.find((s) => s.status !== 'PASSED');
-
-      contract.deliverableUrl = url;
-      contract.commitHash = commit;
-      contract.deliverableNote = note;
-      contract.proofHash = report.testReportHash;
-      contract.ipfsCid = report.ipfsReportCid;
-      contract.ciVerified = report.allObjectivePassed;
-      contract.failedStepText = failedStep ? `Bước ${failedStep.step} (${failedStep.tool}): ${failedStep.log}` : null;
-      contract.aiRecommendation = report.allObjectivePassed ? null : report.recommendation.message;
-      contract.signatures.freelancer = true;
-      contract.status = report.allObjectivePassed ? 'SUBMITTED' : 'REVISION_REQUESTED';
-      contract.timelockRemaining = report.allObjectivePassed
-        ? `Còn ${contract.inspectionDays} ngày (Auto-Release)`
-        : 'Tạm dừng chờ sửa lỗi theo khuyến nghị';
-
-      state.ledger.unshift({
-        id: `EV-${Math.floor(1000 + Math.random() * 9000)}`,
-        time: new Date().toLocaleTimeString('vi-VN'),
-        role: 'FREELANCER',
-        type: report.allObjectivePassed ? 'Nộp Bàn giao (Pass 100%)' : 'Nộp Bàn giao (Không Pass Kiểm thử)',
-        detail: `[${contract.id}] ${
-          report.allObjectivePassed ? 'Vượt qua toàn bộ kiểm thử' : report.recommendation.message
-        }`,
-        amount: contract.amount,
-        auditHash: report.testReportHash.slice(7, 17)
-      });
-
-      await syncStateWithServer(true);
-      renderAllTransactionUI();
-
-      if (report.allObjectivePassed) {
-        // Nếu PASS -> Ẩn hộp cảnh báo Agent, chỉ hiện thông báo thành công ngắn gọn
+      // Bắt buộc kiểm tra GitHub trước khi gửi bàn giao
+      const expectedKey = `${contractId}|${url}|${rawCommit || 'HEAD'}`;
+      if (lastVerifiedGithubKey !== expectedKey) {
         if (freelancerAgentFailureBoxEl) freelancerAgentFailureBoxEl.hidden = true;
         if (freelancerSubmitFeedbackEl) {
           freelancerSubmitFeedbackEl.hidden = false;
-          freelancerSubmitFeedbackEl.className = 'alert-box alert-success';
-          freelancerSubmitFeedbackEl.textContent = `✓ Đã nộp bàn giao cho [${contract.id}] thành công (Proof: ${report.testReportHash}).`;
+          freelancerSubmitFeedbackEl.className = 'alert-box alert-error';
+          freelancerSubmitFeedbackEl.textContent =
+            '⚠️ Bắt buộc kiểm tra GitHub trước khi bàn giao: Vui lòng bấm nút "🔍 Agent Kiểm tra GitHub & Nghiệm thu" trước khi gửi bàn giao!';
         }
-      } else {
-        // Nếu KHÔNG PASS ở bước nào -> Hiện rõ bước lỗi và khuyến nghị của Agent!
-        if (freelancerSubmitFeedbackEl) freelancerSubmitFeedbackEl.hidden = true;
-        if (freelancerAgentFailureBoxEl) {
-          freelancerAgentFailureBoxEl.hidden = false;
-          freelancerAgentFailureBoxEl.innerHTML = `
-            <div><strong>⚠️ Không Pass ở ${
-              failedStep ? `Bước ${failedStep.step} — ${failedStep.tool}` : 'Pipeline Kiểm thử'
-            }:</strong></div>
-            <div style="font-family:var(--font-mono);font-size:0.72rem;margin:0.2rem 0;">${
-              failedStep ? failedStep.log : ''
-            }</div>
-            <div><strong>💡 Khuyến nghị của AI Agent:</strong> "${report.recommendation.message}"</div>
-          `;
+        return;
+      }
+
+      const submitBtn = freelancerSubmitForm.querySelector('button[type="submit"]');
+      const originalBtnHtml = submitBtn ? submitBtn.innerHTML : '';
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = '⏳ Agent đang phân tích...';
+      }
+      if (freelancerAgentFailureBoxEl) freelancerAgentFailureBoxEl.hidden = true;
+      if (freelancerSubmitFeedbackEl) {
+        freelancerSubmitFeedbackEl.hidden = false;
+        freelancerSubmitFeedbackEl.className = 'alert-box';
+        freelancerSubmitFeedbackEl.textContent = '⏳ AI Agent đang phân tích mã nguồn bàn giao và chạy kiểm thử tự động...';
+      }
+
+      try {
+        let report;
+        try {
+          report = await callDynamicApi('/api/agents/verify-assess', 'POST', {
+            submission: { deliverableUrl: url, commitHash: commit, deliverableNote: note },
+            scenario
+          });
+        } catch {
+          report = runAutonomousVerificationAndAssessor(
+            { deliverableUrl: url, commitHash: commit, deliverableNote: note },
+            scenario
+          );
+        }
+
+        const failedStep = report.toolchainSteps.find((s) => s.status !== 'PASSED');
+
+        contract.deliverableUrl = url;
+        contract.commitHash = commit;
+        contract.deliverableNote = note;
+        contract.proofHash = report.testReportHash;
+        contract.ipfsCid = report.ipfsReportCid;
+        contract.ciVerified = report.allObjectivePassed;
+        contract.failedStepText = failedStep ? `Bước ${failedStep.step} (${failedStep.tool}): ${failedStep.log}` : null;
+        contract.aiRecommendation = report.allObjectivePassed ? null : report.recommendation.message;
+        contract.signatures.freelancer = true;
+        contract.status = report.allObjectivePassed ? 'SUBMITTED' : 'REVISION_REQUESTED';
+        contract.timelockRemaining = report.allObjectivePassed
+          ? `Còn ${contract.inspectionDays} ngày (Auto-Release)`
+          : 'Tạm dừng chờ sửa lỗi theo khuyến nghị';
+
+        state.ledger.unshift({
+          id: `EV-${Math.floor(1000 + Math.random() * 9000)}`,
+          time: new Date().toLocaleTimeString('vi-VN'),
+          role: 'FREELANCER',
+          type: report.allObjectivePassed ? 'Nộp Bàn giao (Pass 100%)' : 'Nộp Bàn giao (Không Pass Kiểm thử)',
+          detail: `[${contract.id}] ${
+            report.allObjectivePassed ? 'Vượt qua toàn bộ kiểm thử' : report.recommendation.message
+          }`,
+          amount: contract.amount,
+          auditHash: report.testReportHash.slice(7, 17)
+        });
+
+        await syncStateWithServer(true);
+        renderAllTransactionUI();
+
+        if (report.allObjectivePassed) {
+          // Nếu PASS -> Ẩn hộp cảnh báo Agent, chỉ hiện thông báo thành công ngắn gọn
+          if (freelancerAgentFailureBoxEl) freelancerAgentFailureBoxEl.hidden = true;
+          if (freelancerSubmitFeedbackEl) {
+            freelancerSubmitFeedbackEl.hidden = false;
+            freelancerSubmitFeedbackEl.className = 'alert-box alert-success';
+            freelancerSubmitFeedbackEl.textContent = `✓ Đã nộp bàn giao cho [${contract.id}] thành công (Proof: ${report.testReportHash}).`;
+          }
+        } else {
+          // Nếu KHÔNG PASS ở bước nào -> Hiện rõ bước lỗi và khuyến nghị của Agent!
+          if (freelancerSubmitFeedbackEl) freelancerSubmitFeedbackEl.hidden = true;
+          if (freelancerAgentFailureBoxEl) {
+            freelancerAgentFailureBoxEl.hidden = false;
+            freelancerAgentFailureBoxEl.innerHTML = `
+              <div><strong>⚠️ Không Pass ở ${
+                failedStep ? `Bước ${failedStep.step} — ${failedStep.tool}` : 'Pipeline Kiểm thử'
+              }:</strong></div>
+              <div style="font-family:var(--font-mono);font-size:0.72rem;margin:0.2rem 0;">${
+                failedStep ? failedStep.log : ''
+              }</div>
+              <div><strong>💡 Khuyến nghị của AI Agent:</strong> "${report.recommendation.message}"</div>
+            `;
+          }
+        }
+      } finally {
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.innerHTML = originalBtnHtml;
         }
       }
     });

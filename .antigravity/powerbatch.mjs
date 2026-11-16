@@ -43,13 +43,20 @@ function auditGuardrails() {
   // Quét đảm bảo không có khóa bí mật thực bị hardcode trong src/
   const srcDir = path.join(ROOT_DIR, 'src');
   if (fs.existsSync(srcDir)) {
-    const files = fs.readdirSync(srcDir);
-    for (const file of files) {
-      const content = fs.readFileSync(path.join(srcDir, file), 'utf8');
-      if (/sk_live_[0-9a-zA-Z]{16,}|AIza[0-9A-Za-z-_]{35}/.test(content)) {
-        issues.push(`Phát hiện nghi vấn lộ API secret trong src/${file}`);
+    const walkFiles = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walkFiles(fullPath);
+        } else if (entry.isFile()) {
+          const content = fs.readFileSync(fullPath, 'utf8');
+          if (/sk_live_[0-9a-zA-Z]{16,}|AIza[0-9A-Za-z-_]{35}/.test(content)) {
+            issues.push(`Phát hiện nghi vấn lộ API secret trong ${path.relative(ROOT_DIR, fullPath)}`);
+          }
+        }
       }
-    }
+    };
+    walkFiles(srcDir);
   }
 
   if (issues.length > 0) {

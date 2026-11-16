@@ -185,15 +185,54 @@ export function runScopeDecomposerAgent(rawBrief = '') {
   };
 }
 
+const VERIFICATION_CACHE = new Map();
+
+/**
+ * Phát hiện sớm dấu hiệu Scope Creep (phát sinh ngoài phạm vi hợp đồng) trong nội dung yêu cầu sửa đổi.
+ */
+export function detectScopeCreepRisk(revisionComment = '') {
+  const text = String(revisionComment || '').toLowerCase();
+  const scopeCreepKeywords = [
+    'thêm tính năng',
+    'multi-region',
+    'failover',
+    'làm lại toàn bộ',
+    'tích hợp thêm',
+    'đổi kiến trúc',
+    'mobile app',
+    'thanh toán mới'
+  ];
+  const matchedKeywords = scopeCreepKeywords.filter((kw) => text.includes(kw));
+  const hasScopeCreepRisk = matchedKeywords.length > 0;
+  return {
+    hasScopeCreepRisk,
+    matchedKeywords,
+    warningMessage: hasScopeCreepRisk
+      ? `⚠️ Cảnh báo Scope Creep (${matchedKeywords.join(', ')}): Yêu cầu này có dấu hiệu vượt phạm vi ban đầu. Khuyến nghị tách thành Milestone bổ sung thay vì sửa miễn phí.`
+      : null
+  };
+}
+
 /**
  * TẦNG 2 & TẦNG 3:
  * - Tầng 2 (Autonomous Verification Pipeline): Chạy chuỗi công cụ Git API -> Docker/Firecracker Sandbox -> cURL -> Metadata
- *   (Kiểm tra xem link nộp có phải link GitHub chuẩn không trước khi clone vào Sandbox)
+ *   (Kiểm tra xem link nộp có phải link GitHub chuẩn không trước khi clone vào Sandbox, kèm Cache theo commitHash để giảm độ trễ & chi phí)
  * - Tầng 3 (Proposal & Proof Generation): Tổng hợp Test Report, đưa ra Recommendation & ghi ProofRegistry on-chain
  */
 export function runAutonomousVerificationAndAssessor(submission = {}, scenario = 'PASS_100') {
   const commitHash = submission.commitHash || 'commit#9f8c2a1';
   const repoUrl = submission.deliverableUrl || 'https://github.com/vibecode/app/pull/42';
+  const cacheKey = `${repoUrl.trim()}|${commitHash.trim()}|${scenario}`;
+
+  if (VERIFICATION_CACHE.has(cacheKey)) {
+    const cached = VERIFICATION_CACHE.get(cacheKey);
+    return {
+      ...cached,
+      cacheHit: true,
+      executionMs: 2
+    };
+  }
+
   const isGitHubValid = isValidGitHubUrl(repoUrl);
   const isPassScenario = isGitHubValid && scenario !== 'FAIL_PAYMENT_500';
 
@@ -270,7 +309,7 @@ export function runAutonomousVerificationAndAssessor(submission = {}, scenario =
   const reportPayload = JSON.stringify({ commitHash, repoUrl, scenario, passRatePercent, recommendation });
   const proofInfo = computeProofHashAndCid(reportPayload);
 
-  return {
+  const result = {
     tier2Agent: 'SandboxVerifierAgent (Tầng 2 — Giao hàng)',
     tier3Agent: 'TechnicalAssessorAgent (Tầng 3 — Nghiệm thu)',
     scenario,
@@ -283,8 +322,12 @@ export function runAutonomousVerificationAndAssessor(submission = {}, scenario =
     recommendation,
     testReportHash: proofInfo.sha256,
     proofRegistryOnChainTx: `ProofRegistry::record(${proofInfo.auditHash})`,
-    ipfsReportCid: proofInfo.ipfsCid
+    ipfsReportCid: proofInfo.ipfsCid,
+    cacheHit: false,
+    executionMs: isGitHubValid ? 420 : 12
   };
+  VERIFICATION_CACHE.set(cacheKey, result);
+  return result;
 }
 
 /**
@@ -329,5 +372,386 @@ export function runFactFindingBailiffAgent(contract) {
     proposalStatement: `Freelancer đã hoàn thành ${verifiedCompletionPercent}% khối lượng công việc được kiểm chứng; đề xuất giải ngân ${recommendedSellerPercent}% cho Freelancer và hoàn trả ${recommendedBuyerPercent}% cho Client.`,
     hitlNote: 'Trọng tài con người (Arbiter) chỉ cần xem xét tính hợp lý của Hồ sơ Vụ việc và nhấn nút Ký duyệt (HITL).'
   };
+}
+
+/**
+ * Gọi Google Gemini REST API trả về JSON có cấu trúc.
+ * Tự động thử chuỗi model dự phòng nếu model chính quá tải (503) hoặc không khả dụng (404).
+ */
+async function callGeminiJson(prompt, options = {}) {
+  const apiKey = options.apiKey || (typeof process !== 'undefined' ? process.env.GEMINI_API_KEY : '');
+  if (!apiKey) return null;
+
+  const primaryModel =
+    options.model || (typeof process !== 'undefined' ? process.env.GEMINI_MODEL : '') || 'gemini-flash-latest';
+  const modelsToTry = [
+    ...new Set([
+      primaryModel,
+      'gemini-flash-latest',
+      'gemini-3.8-flash',
+      'gemini-3.7-flash',
+      'gemini-3.5-flash',
+      'gemini-3.1-flash-lite',
+      'gemini-flash-lite-latest'
+    ])
+  ];
+
+  for (const model of modelsToTry) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12000);
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            temperature: 0.2
+          }
+        })
+      });
+      if (!res.ok) continue;
+      const data = await res.json();
+      const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!rawText) continue;
+      return { data: JSON.parse(rawText), model };
+    } catch {
+      // Thử model tiếp theo hoặc fallback về logic cục bộ
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return null;
+}
+
+/**
+ * Lấy metadata thực tế từ GitHub API (hỗ trợ GITHUB_TOKEN cho repo private & tăng rate limit) để cung cấp ngữ cảnh cho Agent Tầng 2–3.
+ */
+async function fetchGitHubContext(repoUrl) {
+  const match = String(repoUrl || '').match(
+    /^https?:\/\/(?:www\.)?github\.com\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/(pull|commit)\/([^/?#]+))?(?:[/?#].*)?$/i
+  );
+  if (!match) return null;
+  const [, owner, repo, resourceType, resourceId] = match;
+  const githubToken = typeof process !== 'undefined' ? process.env.GITHUB_TOKEN : '';
+  const headers = {
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'VibeEscrow-Agent',
+    'X-GitHub-Api-Version': '2022-11-28'
+  };
+  if (githubToken) {
+    headers.Authorization = `Bearer ${githubToken}`;
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    let endpoint = `https://api.github.com/repos/${owner}/${repo}`;
+    if (resourceType === 'pull' && resourceId) {
+      endpoint = `https://api.github.com/repos/${owner}/${repo}/pulls/${resourceId}`;
+    } else if (resourceType === 'commit' && resourceId) {
+      endpoint = `https://api.github.com/repos/${owner}/${repo}/commits/${resourceId}`;
+    }
+
+    const res = await fetch(endpoint, { headers, signal: controller.signal });
+    if (!res.ok) return null;
+    const json = await res.json();
+
+    if (resourceType === 'commit') {
+      return {
+        authenticated: Boolean(githubToken),
+        type: 'commit',
+        fullName: `${owner}/${repo}`,
+        sha: json.sha,
+        message: json.commit?.message || '',
+        author: json.commit?.author?.name || json.author?.login || '',
+        stats: json.stats || null,
+        files: (json.files || []).slice(0, 10).map((f) => ({
+          filename: f.filename,
+          status: f.status,
+          changes: f.changes
+        }))
+      };
+    }
+
+    if (resourceType === 'pull') {
+      return {
+        authenticated: Boolean(githubToken),
+        type: 'pull_request',
+        fullName: `${owner}/${repo}`,
+        number: json.number,
+        title: json.title || '',
+        state: json.state || 'open',
+        merged: Boolean(json.merged),
+        author: json.user?.login || '',
+        changedFiles: json.changed_files ?? null,
+        additions: json.additions ?? null,
+        deletions: json.deletions ?? null
+      };
+    }
+
+    return {
+      authenticated: Boolean(githubToken),
+      type: 'repository',
+      fullName: json.full_name || `${owner}/${repo}`,
+      title: json.description || json.name || '',
+      visibility: json.private ? 'private' : 'public',
+      defaultBranch: json.default_branch || 'main',
+      language: json.language || 'Unknown',
+      updatedAt: json.updated_at || null
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * TẦNG 1 (LIVE GEMINI): Phân rã Brief thành Machine-readable Checklist.
+ */
+export async function runScopeDecomposerAgentLive(rawBrief = '') {
+  const fallback = runScopeDecomposerAgent(rawBrief);
+  if (!fallback.isValidTitle) return fallback;
+
+  const prompt = [
+    'Bạn là ScopeDecomposerAgent trong hệ thống Smart Escrow. Hãy phân rã yêu cầu hợp đồng sau thành JSON tiếng Việt.',
+    `Yêu cầu: "${fallback.sourceBrief}"`,
+    'Trả về đúng JSON object với 2 mảng:',
+    '- "deterministicItems": 3-4 tiêu chí kiểm chứng tự động được, mỗi phần tử có { "id": "OBJ-01", "type": "DETERMINISTIC", "category": string, "criterion": string, "metric": string, "verifiableBy": string }',
+    '- "subjectiveItems": 2 tiêu chí cảm quan cần Client duyệt tay, mỗi phần tử có { "id": "SUB-01", "type": "SUBJECTIVE", "category": string, "criterion": string, "approver": "Chuyển quyền cho Client (Buyer) duyệt tay" }'
+  ].join('\n');
+
+  const ai = await callGeminiJson(prompt);
+  if (!ai?.data || !Array.isArray(ai.data.deterministicItems) || !Array.isArray(ai.data.subjectiveItems)) {
+    return { ...fallback, liveAi: false };
+  }
+
+  const deterministicItems = ai.data.deterministicItems.slice(0, 5).map((item, idx) => ({
+    id: item.id || `OBJ-0${idx + 1}`,
+    type: 'DETERMINISTIC',
+    category: item.category || 'Technical Check',
+    criterion: item.criterion || 'Đạt tiêu chuẩn kỹ thuật',
+    metric: item.metric || 'passed == true',
+    verifiableBy: item.verifiableBy || 'Sandbox Runner'
+  }));
+  const subjectiveItems = ai.data.subjectiveItems.slice(0, 3).map((item, idx) => ({
+    id: item.id || `SUB-0${idx + 1}`,
+    type: 'SUBJECTIVE',
+    category: item.category || 'Visual & UX',
+    criterion: item.criterion || 'Đạt thẩm mỹ theo yêu cầu',
+    approver: item.approver || 'Chuyển quyền cho Client (Buyer) duyệt tay'
+  }));
+
+  const hashInfo = computeProofHashAndCid(
+    JSON.stringify({ sourceBrief: fallback.sourceBrief, deterministicItems, subjectiveItems })
+  );
+
+  return {
+    ...fallback,
+    liveAi: true,
+    aiModel: ai.model,
+    checklistHash: hashInfo.sha256,
+    onChainAnchorTx: hashInfo.auditHash,
+    deterministicItems,
+    subjectiveItems,
+    summaryText: `[Gemini ${ai.model}] Đã phân rã "${fallback.sourceBrief}" thành ${deterministicItems.length} tiêu chí Deterministic và ${subjectiveItems.length} tiêu chí Subjective. Checklist Hash: ${hashInfo.sha256}`
+  };
+}
+
+/**
+ * TẦNG 2 & 3 (LIVE GEMINI + GITHUB API): Thẩm định bàn giao & Đề xuất nghiệm thu.
+ */
+export async function runAutonomousVerificationAndAssessorLive(submission = {}, scenario = 'PASS_100') {
+  const fallback = runAutonomousVerificationAndAssessor(submission, scenario);
+  if (!fallback.isGitHubValid) return fallback;
+
+  const repoUrl = submission.deliverableUrl || 'https://github.com/vibecode/app/pull/42';
+  const commitHash = submission.commitHash || 'commit#9f8c2a1';
+  const [ghContext, avaxContext] = await Promise.all([
+    fetchGitHubContext(repoUrl),
+    fetchAvalancheContext({
+      chainId: submission.chainId,
+      txHash: /^0x[a-fA-F0-9]{64}$/.test(commitHash) ? commitHash : undefined
+    })
+  ]);
+
+  const prompt = [
+    'Bạn là SandboxVerifierAgent & TechnicalAssessorAgent trong hệ thống Smart Escrow. Hãy đánh giá gói bàn giao sau bằng tiếng Việt.',
+    `URL GitHub: ${repoUrl}`,
+    `Commit: ${commitHash}`,
+    `Kịch bản kiểm thử: ${scenario}`,
+    ghContext ? `Dữ liệu GitHub thực tế: ${JSON.stringify(ghContext)}` : 'Không lấy được metadata GitHub công khai, đánh giá theo ngữ cảnh submission.',
+    'Trả về đúng JSON object:',
+    '{',
+    '  "objectivePassed": number (0..4),',
+    '  "objectiveTotal": 4,',
+    '  "toolchainSteps": [ { "step": 1..4, "tool": string, "action": string, "status": "PASSED"|"FAILED"|"SKIPPED", "log": string } ],',
+    '  "recommendation": { "targetRole": "CLIENT (Buyer)"|"FREELANCER (Seller)", "decision": "RECOMMEND_RELEASE"|"REQUEST_FIX", "message": string }',
+    '}'
+  ].join('\n');
+
+  const ai = await callGeminiJson(prompt);
+  if (!ai?.data || !Array.isArray(ai.data.toolchainSteps) || !ai.data.recommendation) {
+    return { ...fallback, githubContext: ghContext, liveAi: false };
+  }
+
+  const objectiveTotal = Number(ai.data.objectiveTotal) || 4;
+  const objectivePassed = Math.max(0, Math.min(objectiveTotal, Number(ai.data.objectivePassed ?? fallback.objectivePassed)));
+  const passRatePercent = Math.round((objectivePassed / objectiveTotal) * 100);
+  const allObjectivePassed = objectivePassed === objectiveTotal && ai.data.recommendation.decision === 'RECOMMEND_RELEASE';
+
+  const proofInfo = computeProofHashAndCid(
+    JSON.stringify({ commitHash, repoUrl, scenario, passRatePercent, recommendation: ai.data.recommendation })
+  );
+
+  return {
+    ...fallback,
+    liveAi: true,
+    aiModel: ai.model,
+    githubContext: ghContext,
+    avalancheContext: avaxContext,
+    allObjectivePassed,
+    passRatePercent,
+    objectivePassed,
+    objectiveTotal,
+    toolchainSteps: ai.data.toolchainSteps.slice(0, 4),
+    recommendation: ai.data.recommendation,
+    testReportHash: proofInfo.sha256,
+    proofRegistryOnChainTx: `ProofRegistry::record(${proofInfo.auditHash})`,
+    ipfsReportCid: proofInfo.ipfsCid
+  };
+}
+
+/**
+ * TẦNG 4 (LIVE GEMINI): Thừa phát lại tổng hợp Hồ sơ Tranh chấp & Đề xuất tỷ lệ phân chia quỹ.
+ */
+export async function runFactFindingBailiffAgentLive(contract) {
+  const fallback = runFactFindingBailiffAgent(contract);
+  const c = contract || {};
+
+  const prompt = [
+    'Bạn là FactFindingBailiffAgent (Thừa phát lại AI) trong hệ thống Smart Escrow. Hãy phân tích tranh chấp sau và đề xuất tỷ lệ chia quỹ công bằng cho Trọng tài con người (HITL) bằng tiếng Việt.',
+    `Hợp đồng: ${JSON.stringify({ id: c.id || fallback.contractId, title: c.title || fallback.contractTitle, freelancer: c.freelancer, amount: c.amount, acceptanceCriteria: c.acceptanceCriteria, commitHash: c.commitHash, evidencesCount: (c.evidences || []).length })}`,
+    'Trả về đúng JSON object:',
+    '{',
+    '  "verifiedCompletionPercent": number (0..100),',
+    '  "recommendedSellerPercent": number (0..100),',
+    '  "recommendedBuyerPercent": number (0..100, sao cho Seller + Buyer = 100),',
+    '  "dossierSections": { "signedChecklistAnchor": string, "deliveryAndCommitTimeline": string, "automatedTestAudit": string, "scopeCreepAnalysis": string },',
+    '  "proposalStatement": string',
+    '}'
+  ].join('\n');
+
+  const ai = await callGeminiJson(prompt);
+  if (!ai?.data || typeof ai.data.recommendedSellerPercent !== 'number') {
+    return { ...fallback, liveAi: false };
+  }
+
+  const sellerPct = Math.max(0, Math.min(100, Math.round(ai.data.recommendedSellerPercent)));
+  const buyerPct = 100 - sellerPct;
+  const completionPct = Math.max(0, Math.min(100, Math.round(ai.data.verifiedCompletionPercent ?? sellerPct)));
+
+  return {
+    ...fallback,
+    liveAi: true,
+    aiModel: ai.model,
+    verifiedCompletionPercent: completionPct,
+    recommendedSellerPercent: sellerPct,
+    recommendedBuyerPercent: buyerPct,
+    dossierSections: {
+      ...fallback.dossierSections,
+      ...(ai.data.dossierSections || {}),
+      evidenceFilesCount: (c.evidences || []).length
+    },
+    proposalStatement:
+      ai.data.proposalStatement ||
+      `[Gemini ${ai.model}] Freelancer đã hoàn thành ${completionPct}% khối lượng; đề xuất giải ngân ${sellerPct}% cho Freelancer và hoàn trả ${buyerPct}% cho Client.`
+  };
+}
+
+/**
+ * Kết nối Avalanche API (Glacier Data API + Routescan/Snowtrace EVM API với AVALANCHE_API_KEY).
+ * Hỗ trợ kiểm tra trạng thái chuỗi (chainId, mặc định 43114 C-Chain), block mới nhất, số dư hoặc giao dịch on-chain.
+ */
+export async function fetchAvalancheContext({ chainId, address, txHash } = {}) {
+  const apiKey = typeof process !== 'undefined' ? process.env.AVALANCHE_API_KEY : '';
+  const targetChain = String(chainId || (typeof process !== 'undefined' ? process.env.AVALANCHE_CHAIN_ID : '') || '43114');
+  const network = targetChain === '43113' ? 'testnet' : 'mainnet';
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 6000);
+  try {
+    const routescanBase = `https://api.routescan.io/v2/network/${network}/evm/${encodeURIComponent(targetChain)}/etherscan/api`;
+    const keyParam = apiKey ? `&apikey=${encodeURIComponent(apiKey)}` : '';
+
+    if (txHash && /^0x[a-fA-F0-9]{64}$/.test(txHash)) {
+      const res = await fetch(`${routescanBase}?module=proxy&action=eth_getTransactionByHash&txhash=${encodeURIComponent(txHash)}${keyParam}`, {
+        signal: controller.signal
+      });
+      if (!res.ok) return null;
+      const json = await res.json();
+      return {
+        authenticated: Boolean(apiKey),
+        provider: 'Avalanche Routescan EVM API',
+        chainId: targetChain,
+        chainName: targetChain === '43114' ? 'Avalanche C-Chain' : `Chain ${targetChain}`,
+        status: json.result ? 'CONFIRMED' : 'NOT_FOUND',
+        networkToken: 'AVAX',
+        data: json.result || null
+      };
+    }
+
+    if (address && /^0x[a-fA-F0-9]{40}$/.test(address)) {
+      const res = await fetch(`${routescanBase}?module=account&action=balance&address=${encodeURIComponent(address)}&tag=latest${keyParam}`, {
+        signal: controller.signal
+      });
+      if (!res.ok) return null;
+      const json = await res.json();
+      return {
+        authenticated: Boolean(apiKey),
+        provider: 'Avalanche Routescan EVM API',
+        chainId: targetChain,
+        chainName: targetChain === '43114' ? 'Avalanche C-Chain' : `Chain ${targetChain}`,
+        status: json.status === '1' ? 'OK' : 'ERROR',
+        networkToken: 'AVAX',
+        balanceWei: json.result || '0',
+        data: json
+      };
+    }
+
+    const [glacierRes, blockRes] = await Promise.all([
+      fetch(`https://glacier-api.avax.network/v1/chains/${encodeURIComponent(targetChain)}`, {
+        headers: { Accept: 'application/json' },
+        signal: controller.signal
+      }),
+      fetch(`${routescanBase}?module=proxy&action=eth_blockNumber${keyParam}`, {
+        signal: controller.signal
+      })
+    ]);
+
+    const glacierJson = glacierRes.ok ? await glacierRes.json() : null;
+    const blockJson = blockRes.ok ? await blockRes.json() : null;
+    if (!glacierJson && !blockJson) return null;
+
+    const latestBlock = blockJson?.result ? parseInt(blockJson.result, 16) : null;
+    return {
+      authenticated: Boolean(apiKey),
+      provider: 'Avalanche Glacier + Routescan API',
+      chainId: targetChain,
+      chainName: glacierJson?.chainName || (targetChain === '43114' ? 'Avalanche (C-Chain)' : `Chain ${targetChain}`),
+      status: glacierJson?.status || (latestBlock ? 'OK' : 'UNKNOWN'),
+      networkToken: glacierJson?.networkToken?.symbol || 'AVAX',
+      latestBlock,
+      data: { glacier: glacierJson, latestBlockHex: blockJson?.result || null }
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
