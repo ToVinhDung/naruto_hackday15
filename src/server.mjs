@@ -25,6 +25,7 @@ import { refineVagueCriteria, loadHistoricalBaselines } from './engine/criteriaR
 import { calculateFrozenFundSplit } from './engine/settlementCalculator.mjs';
 import { parseGitHubUrl, fetchGitHubCommitDetails, runSandboxTests } from './tools/githubVerifier.mjs';
 import { AGENT_VERIFICATION_TOOLS, executeAgentTool } from './tools/agentTools.mjs';
+import { anchorProofOnFuji } from './blockchain/fujiBridge.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -372,6 +373,19 @@ export function createPreviewServer() {
           updatedAt: new Date().toISOString()
         });
 
+        const fujiAnchor = await anchorProofOnFuji({
+          milestoneId,
+          deliverableHash: commitDetails.sha || commitSha,
+          testReportHash: evaluation.testReportHash,
+          score: evaluation.deterministicScore
+        }).catch((err) => ({
+          onChain: false,
+          chainId: 43113,
+          reason: err.message,
+          txHash: null,
+          snowtraceUrl: null
+        }));
+
         sendJson(res, 200, {
           ok: true,
           milestoneId,
@@ -396,7 +410,8 @@ export function createPreviewServer() {
             testLog: sandbox.testLog
           },
           evaluation,
-          testReportHash: evaluation.testReportHash
+          testReportHash: evaluation.testReportHash,
+          fujiAnchor
         });
       } catch (err) {
         sendJson(res, 400, { error: err.message });

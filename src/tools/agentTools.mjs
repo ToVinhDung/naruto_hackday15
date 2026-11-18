@@ -5,6 +5,7 @@ import path from 'node:path';
 import { computeSha256, loadBaseline } from '../engine/baselineManager.mjs';
 import { evaluateSubmission } from '../engine/ruleEngine.mjs';
 import { fetchAvalancheContext } from '../agents.js';
+import { anchorProofOnFuji, buildSnowtraceTxUrl } from '../blockchain/fujiBridge.mjs';
 import { parseGitHubUrl, fetchGitHubCommitDetails, runSandboxTests } from './githubVerifier.mjs';
 
 /**
@@ -245,7 +246,15 @@ export async function anchor_proof_onchain({
     .update(JSON.stringify(payload))
     .digest('hex');
 
-  const txHash = `0x${computeSha256({ ...payload, relaySignature })}`;
+  const fujiResult = await anchorProofOnFuji({
+    milestoneId,
+    deliverableHash: payload.deliverableHash,
+    testReportHash,
+    score
+  }).catch(() => ({ onChain: false }));
+
+  const txHash = fujiResult?.onChain && fujiResult?.txHash ? fujiResult.txHash : `0x${computeSha256({ ...payload, relaySignature })}`;
+  const snowtraceUrl = fujiResult?.snowtraceUrl || buildSnowtraceTxUrl(txHash);
   const avalancheStatus = await fetchAvalancheContext({ chainId: '43113' }).catch(() => null);
 
   return {
@@ -254,9 +263,12 @@ export async function anchor_proof_onchain({
     canReleaseFunds: false,
     forbiddenContractAccess: ['MilestoneEscrow.sol::releaseFunds', 'MilestoneEscrow.sol::refund'],
     network: 'Avalanche Fuji Testnet (43113)',
+    onChain: Boolean(fujiResult?.onChain),
+    contractAddress: fujiResult?.contractAddress || null,
     avalancheConnected: Boolean(avalancheStatus),
     latestFujiBlock: avalancheStatus?.latestBlock || null,
     txHash,
+    snowtraceUrl,
     relaySignature: `0x${relaySignature}`,
     payload
   };

@@ -3370,6 +3370,11 @@ export function initBrowserApp() {
         }
       }
 
+      const fuji = res.fujiAnchor || {};
+      const snowtraceHtml = fuji.txHash
+        ? `<div style="margin-bottom:0.45rem;font-size:0.75rem;">⛓️ <strong>Avalanche Fuji ProofRegistry:</strong> <a href="${escapeHtml(fuji.snowtraceUrl || `https://testnet.snowtrace.io/tx/${fuji.txHash}`)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-blue);font-weight:700;text-decoration:underline;">Xem giao dịch trên Snowtrace (${escapeHtml(String(fuji.txHash).slice(0, 14))}…) ↗</a></div>`
+        : `<div style="margin-bottom:0.45rem;font-size:0.74rem;color:var(--text-muted);">⛓️ <strong>Avalanche Fuji ProofRegistry:</strong> ${escapeHtml(fuji.reason || 'Chưa deploy contract lên Fuji (off-chain hash sẵn sàng)')}</div>`;
+
       githubVerificationReportBoxEl.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;margin-bottom:0.5rem;flex-wrap:wrap;">
           <strong style="font-size:0.84rem;">🔍 Báo cáo Kiểm tra GitHub &amp; Đối chiếu Baseline [${contractId}]</strong>
@@ -3381,6 +3386,7 @@ export function initBrowserApp() {
         <div style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:0.45rem;">
           Repo: <code>${gh.owner || '-'}/${gh.repo || '-'}</code> • Commit: <code>${String(gh.commitSha || commitSha).slice(0, 10)}</code> • Thời gian chạy Sandbox: <strong>${sb.executionTimeMs || 0}ms</strong> • Files: <strong>${sb.deliveredFilesCount || 0}</strong> • Report Hash: <code>${String(res.testReportHash || '').slice(0, 16)}…</code>
         </div>
+        ${snowtraceHtml}
         <div style="overflow-x:auto;margin-bottom:0.5rem;">
           <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--border-color);border-radius:6px;">
             <thead>
