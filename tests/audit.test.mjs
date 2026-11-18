@@ -7,6 +7,7 @@ import {
   releasePartialMilestone,
   resolveDisputeByArbiter,
   openDisputeWithEvidence,
+  applyCircuitBreakerFreeze,
   escapeHtml,
   evaluateGuardrailCommand,
   calculateFeeBreakdown,
@@ -137,7 +138,13 @@ test('P1-8 & P1-9: Server Auto-Release Worker chỉ giải ngân SUBMITTED_PASSE
   cWorker.inspectionMs = 3 * 86400000;
   const released = processAutoReleaseContracts(state, Date.now());
   assert.deepEqual(released, [cWorker.id]);
-  assert.equal(cWorker.status, 'RELEASED');
+  assert.equal(cWorker.status, 'AUTO_RELEASED');
+
+  // Circuit Breaker Auto-Freeze
+  const freezeRes = applyCircuitBreakerFreeze(state, 'ESC-101', 'Vi phạm forbidden_paths');
+  assert.equal(freezeRes.ok, true);
+  assert.equal(freezeRes.contract.vaultFrozen, true);
+  assert.equal(freezeRes.contract.status, 'DISPUTED');
 });
 
 test('P2-1 & P2-2: REFUND_CLIENT hoàn 100% không trừ phí, và calculateFeeBreakdown hỗ trợ feePayer (FREELANCER/CLIENT/SPLIT)', () => {

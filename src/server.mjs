@@ -140,7 +140,7 @@ function filterStateByRole(state, role) {
 }
 
 /**
- * Worker tự động giải ngân khi hợp đồng ở trạng thái SUBMITTED_PASSED và quá thời gian kiểm tra (inspectionMs).
+ * Worker tự động giải ngân khi hợp đồng ở trạng thái SUBMITTED_PASSED và quá thời gian kiểm tra (inspectionWindowMs).
  */
 export function processAutoReleaseContracts(state, nowMs = Date.now()) {
   if (!state || !Array.isArray(state.contracts) || state.vaultPaused) return [];
@@ -148,11 +148,14 @@ export function processAutoReleaseContracts(state, nowMs = Date.now()) {
   for (const contract of state.contracts) {
     if (contract.status !== 'SUBMITTED_PASSED' || contract.vaultFrozen) continue;
     const submittedAt = Number(contract.submittedAt);
-    const inspectionMs = Number(contract.inspectionMs ?? (Number(contract.inspectionDays) || 3) * 86400000);
-    if (!Number.isFinite(submittedAt) || nowMs <= submittedAt + inspectionMs) continue;
+    const inspectionWindowMs = Number(
+      contract.inspectionWindowMs ?? contract.inspectionMs ?? (Number(contract.inspectionDays) || 3) * 86400000
+    );
+    if (!Number.isFinite(submittedAt) || nowMs <= submittedAt + inspectionWindowMs) continue;
 
     const res = triggerTimelockAutoRelease(state, contract.id, { nowMs, triggeredBy: 'SERVER_WORKER' });
     if (res.ok) {
+      contract.status = 'AUTO_RELEASED';
       releasedIds.push(contract.id);
     }
   }
@@ -181,7 +184,10 @@ export function createPreviewServer() {
         geminiModel: process.env.GEMINI_MODEL || 'gemini-flash-latest',
         githubConfigured: Boolean(process.env.GITHUB_TOKEN),
         avalancheConfigured: Boolean(process.env.AVALANCHE_API_KEY),
-        avalancheChainId: process.env.AVALANCHE_CHAIN_ID || '43114'
+        avalancheChainId: process.env.AVALANCHE_CHAIN_ID || '43114',
+        llmEngine: process.env.GEMINI_API_KEY ? 'LLM_ONLINE (Gemini)' : 'RULE_FALLBACK_ACTIVE',
+        sandboxRunner: 'Ready (30s/45s Isolated)',
+        timelockMonitor: 'Active (15s Worker)'
       });
       return;
     }
@@ -390,6 +396,19 @@ export function createPreviewServer() {
           metrics: sandbox.metrics
         });
 
+        let autoFrozen = false;
+        if (evaluation.blocked) {
+          const targetContract = serverEscrowState.contracts.find(
+            (c) => c.id === agreementId || c.id === milestoneId
+          );
+          if (targetContract) {
+            targetContract.vaultFrozen = true;
+            targetContract.status = 'DISPUTED';
+            targetContract.timelockRemaining = '❄️ ĐÓNG BĂNG TỰ ĐỘNG (Circuit Breaker)';
+          }
+          autoFrozen = true;
+        }
+
         latestEvaluationReports.set(milestoneId, {
           baseline,
           evaluation,
@@ -433,6 +452,7 @@ export function createPreviewServer() {
             testLog: sandbox.testLog
           },
           evaluation,
+          autoFrozen,
           testReportHash: evaluation.testReportHash,
           fujiAnchor
         });
@@ -605,7 +625,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   server.listen(PORT, HOST, () => {
     setInterval(() => {
       processAutoReleaseContracts(serverEscrowState, Date.now());
-    }, 30000).unref();
+    }, 15000).unref();
     console.log(`[Antigravity Preview Server] Listening at http://${HOST}:${PORT}`);
   });
 }

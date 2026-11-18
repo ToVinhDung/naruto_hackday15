@@ -1135,6 +1135,17 @@ export function submitDisputeEvidence(state, contractId, actor, content, fileMet
   return { ok: true, entry };
 }
 
+export function applyCircuitBreakerFreeze(state, contractId, reason = 'Phát hiện vi phạm forbidden_paths') {
+  const contract = state.contracts.find((c) => c.id === contractId);
+  if (!contract) return { ok: false, error: 'Không tìm thấy hợp đồng.' };
+  contract.vaultFrozen = true;
+  contract.status = 'DISPUTED';
+  contract.ciVerified = false;
+  contract.timelockRemaining = '❄️ ĐÓNG BĂNG TỰ ĐỘNG (Circuit Breaker)';
+  contract.disputeReason = reason;
+  return { ok: true, contract };
+}
+
 export function openDisputeWithEvidence(state, contractId, actorContext = {}, reason = '') {
   const contract = state.contracts.find((c) => c.id === contractId);
   if (!contract) return { ok: false, error: 'Không tìm thấy hợp đồng.' };
@@ -1341,8 +1352,16 @@ export function initBrowserApp() {
         }
       }
       if (apiSyncIndicatorEl) {
-        apiSyncIndicatorEl.textContent = health?.status === 'ok' ? '● Đã kết nối API (Local)' : '● Mất kết nối API';
-        apiSyncIndicatorEl.className = health?.status === 'ok' ? 'bank-connection is-connected' : 'bank-connection';
+        if (health?.status === 'ok') {
+          const llmLabel = health.llmEngine || (health.geminiConfigured ? 'LLM_ONLINE' : 'RULE_FALLBACK_ACTIVE');
+          const sandboxLabel = health.sandboxRunner || 'Ready';
+          const timelockLabel = health.timelockMonitor || 'Active (15s)';
+          apiSyncIndicatorEl.textContent = `● API Online • ${llmLabel} • Sandbox: ${sandboxLabel} • Timelock: ${timelockLabel}`;
+          apiSyncIndicatorEl.className = 'bank-connection is-connected';
+        } else {
+          apiSyncIndicatorEl.textContent = '● Mất kết nối API';
+          apiSyncIndicatorEl.className = 'bank-connection';
+        }
       }
     } catch {
       if (apiSyncIndicatorEl) {
@@ -1365,7 +1384,8 @@ export function initBrowserApp() {
       case 'DISPUTED':
         return `<span class="pill pill-rose">❄️ Đang Tranh chấp</span>`;
       case 'RELEASED':
-        return `<span class="pill pill-emerald">✓ Đã giải ngân</span>`;
+      case 'AUTO_RELEASED':
+        return `<span class="pill pill-emerald">✓ Đã giải ngân${status === 'AUTO_RELEASED' ? ' (Auto)' : ''}</span>`;
       case 'REFUNDED':
         return `<span class="pill">Đã hoàn trả Buyer</span>`;
       case 'SPLIT':
@@ -3375,17 +3395,28 @@ export function initBrowserApp() {
         ? `<div style="margin-bottom:0.45rem;font-size:0.75rem;">⛓️ <strong>Avalanche Fuji ProofRegistry:</strong> <a href="${escapeHtml(fuji.snowtraceUrl || `https://testnet.snowtrace.io/tx/${fuji.txHash}`)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-blue);font-weight:700;text-decoration:underline;">Xem giao dịch trên Snowtrace (${escapeHtml(String(fuji.txHash).slice(0, 14))}…) ↗</a></div>`
         : `<div style="margin-bottom:0.45rem;font-size:0.74rem;color:var(--text-muted);">⛓️ <strong>Avalanche Fuji ProofRegistry:</strong> ${escapeHtml(fuji.reason || 'Chưa deploy contract lên Fuji (off-chain hash sẵn sàng)')}</div>`;
 
+      if (ev.blocked || res.autoFrozen) {
+        applyCircuitBreakerFreeze(state, contractId, 'Vi phạm phạm vi file cấm (forbidden_paths)');
+        renderAllTransactionUI();
+      }
+
+      const friendlyStatusBanner = ev.blocked || res.autoFrozen
+        ? `<div class="alert-box alert-error" style="margin-bottom:0.5rem;">🚨 <strong>Circuit Breaker đã tự động đóng băng quỹ:</strong> Phát hiện sửa file nằm ngoài phạm vi cho phép. Bộ đếm Timelock đã tạm dừng.</div>`
+        : ev.recommendation === 'READY_FOR_CLIENT_REVIEW'
+        ? `<div class="alert-box alert-success" style="margin-bottom:0.5rem;">✅ <strong>Đã kiểm tra tự động: Đạt ${ev.deterministicScore}% tiêu chí kỹ thuật</strong> • ⏳ Đang chờ Khách hàng duyệt giao diện / cảm quan.</div>`
+        : ev.recommendation === 'AUTO_RECOMMEND_RELEASE'
+        ? `<div class="alert-box alert-success" style="margin-bottom:0.5rem;">✅ <strong>Đã kiểm tra tự động: Đạt 100% tiêu chí kỹ thuật</strong> — Đủ điều kiện nghiệm thu &amp; giải ngân.</div>`
+        : `<div class="alert-box alert-warning" style="margin-bottom:0.5rem;">⚠️ <strong>Chưa đạt đủ tiêu chí kỹ thuật (${ev.deterministicScore}%):</strong> Cần chỉnh sửa theo bảng chi tiết bên dưới.</div>`;
+
       githubVerificationReportBoxEl.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;margin-bottom:0.5rem;flex-wrap:wrap;">
-          <strong style="font-size:0.84rem;">🔍 Báo cáo Kiểm tra GitHub &amp; Đối chiếu Baseline [${contractId}]</strong>
+          <strong style="font-size:0.84rem;">🔍 Kết quả Kiểm tra Nghiệm thu [${escapeHtml(contractId)}]</strong>
           <span class="pill ${ev.recommendation === 'REQUEST_REVISION' || ev.blocked ? 'pill-rose' : 'pill-emerald'}" style="font-size:0.72rem;">
-            Đề xuất: ${ev.recommendation} (Điểm kỹ thuật: ${ev.deterministicScore}%)
+            Điểm kỹ thuật: ${ev.deterministicScore}%
           </span>
         </div>
+        ${friendlyStatusBanner}
         ${violationAlert}
-        <div style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:0.45rem;">
-          Repo: <code>${gh.owner || '-'}/${gh.repo || '-'}</code> • Commit: <code>${String(gh.commitSha || commitSha).slice(0, 10)}</code> • Thời gian chạy Sandbox: <strong>${sb.executionTimeMs || 0}ms</strong> • Files: <strong>${sb.deliveredFilesCount || 0}</strong> • Report Hash: <code>${String(res.testReportHash || '').slice(0, 16)}…</code>
-        </div>
         ${snowtraceHtml}
         <div style="overflow-x:auto;margin-bottom:0.5rem;">
           <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--border-color);border-radius:6px;">
@@ -3400,8 +3431,11 @@ export function initBrowserApp() {
             <tbody>${critRows}${hitlRows}</tbody>
           </table>
         </div>
-        <details open>
-          <summary style="font-size:0.76rem;font-weight:700;cursor:pointer;margin-bottom:0.25rem;">🖥 Log chạy kiểm thử từ GitHub Sandbox (${sb.testCommand || 'node --test'})</summary>
+        <details>
+          <summary style="font-size:0.76rem;font-weight:700;cursor:pointer;margin-bottom:0.25rem;">🛠️ Xem chi tiết kỹ thuật (Dành cho Dev)</summary>
+          <div style="font-size:0.74rem;color:var(--text-secondary);margin:0.35rem 0;">
+            Repo: <code>${escapeHtml(gh.owner || '-')}/${escapeHtml(gh.repo || '-')}</code> • Commit: <code>${escapeHtml(String(gh.commitSha || commitSha).slice(0, 10))}</code> • Sandbox: <strong>${sb.executionTimeMs || 0}ms</strong> • Files: <strong>${sb.deliveredFilesCount || 0}</strong> • Report Hash: <code>${escapeHtml(String(res.testReportHash || ''))}</code>
+          </div>
           <pre style="background:#0F172A;color:#F8FAFC;padding:0.55rem;border-radius:6px;font-size:0.72rem;max-height:180px;overflow:auto;white-space:pre-wrap;">${String(sb.testLog || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}</pre>
         </details>
         ${disputeRecHtml}

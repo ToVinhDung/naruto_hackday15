@@ -1,7 +1,7 @@
 {
   "pipelineName": "Antigravity PowerBatch Verification Suite",
-  "startedAt": "2026-11-18T10:40:23.230Z",
-  "completedAt": "2026-11-18T10:40:23.806Z",
+  "startedAt": "2026-11-18T10:43:33.385Z",
+  "completedAt": "2026-11-18T10:43:34.433Z",
   "overallStatus": "PASSED",
   "vercelPreviewReady": true,
   "totalBatches": 4,
@@ -12,7 +12,7 @@
       "name": "Security & Guardrails Audit",
       "stage": "pre-verify",
       "status": "PASSED",
-      "durationMs": 129,
+      "durationMs": 229,
       "stdout": "[PowerBatch][Guardrails] PASSED: Whitelist, Context Anchors và Secret Guardrails hợp lệ.",
       "stderr": ""
     },
@@ -21,7 +21,7 @@
       "name": "White UI Design Token Verification",
       "stage": "lint",
       "status": "PASSED",
-      "durationMs": 78,
+      "durationMs": 218,
       "stdout": "[PowerBatch][WhiteUI] PASSED: Giao diện tuân thủ chuẩn White Tone Design System.",
       "stderr": ""
     },
@@ -30,8 +30,8 @@
       "name": "Automated Integration & Architecture Tests",
       "stage": "test",
       "status": "PASSED",
-      "durationMs": 260,
-      "stdout": "✔ 1. Cấu trúc thư mục chuẩn hóa cho Antigravity + PowerBatch + Vercel tồn tại đầy đủ (9.7789ms)\n✔ 2. 3 Trạng thái Đăng nhập (Client, Freelancer, Arbiter) mỗi vai trò có 3 Nút Vùng mở Toàn Màn Hình & Popup Giao dịch (3.3602ms)\n✔ 3. Upload File Bằng chứng trong Cửa sổ Popup Giao dịch & Arbiter nhận đầy đủ File (32.4195ms)\n✔ 4. Phân hệ 1–4: Chia Milestone, Multi-Sig 2-of-3, SHA-256/IPFS, Giải ngân từng phần & Timelock (7.1455ms)\n✔ 5. Phân hệ 5 & 6: Trọng tài Chia Tỷ lệ Linh hoạt (60/40 Split) & Kiểm thử 5 Lớp Guardrails (2.2659ms)\n✔ 6. Hệ thống 4 Tầng Agentic AI: Soạn thảo Checklist, Sandbox Verifier, Technical Assessor & Fact-finding Bailiff (1.4221ms)\n✔ 7. Tính năng Yêu cầu Chỉnh sửa (Custom Revision Input) & Kiểm tra Bắt buộc File Bằng chứng (0.3922ms)\n✔ 8. Agent kiểm tra định dạng link GitHub chuẩn & Tên hợp đồng có ý nghĩa (chặn ký hiệu linh tinh) (0.3564ms)\n✔ 9. Hệ thống nạp tiền VietQR (MB - NGUYEN VAN A 0000000000) & Quy trình Arbiter phê duyệt mới vào hệ thống (3.1142ms)\n✔ 10. Giảm thiểu 5 Rủi ro: Circuit Breaker, AML/KYC phân tầng, Scope Creep Detection, Sandbox Cache & Onboarding Non-tech (1.0979ms)\nℹ tests 10\nℹ suites 0\nℹ pass 10\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 168.6476",
+      "durationMs": 427,
+      "stdout": "✔ 1. Cấu trúc thư mục chuẩn hóa cho Antigravity + PowerBatch + Vercel tồn tại đầy đủ (8.1129ms)\n✔ 2. 3 Trạng thái Đăng nhập (Client, Freelancer, Arbiter) mỗi vai trò có 3 Nút Vùng mở Toàn Màn Hình & Popup Giao dịch (2.3469ms)\n✔ 3. Upload File Bằng chứng trong Cửa sổ Popup Giao dịch & Arbiter nhận đầy đủ File (32.8915ms)\n✔ 4. Phân hệ 1–4: Chia Milestone, Multi-Sig 2-of-3, SHA-256/IPFS, Giải ngân từng phần & Timelock (8.5488ms)\n✔ 5. Phân hệ 5 & 6: Trọng tài Chia Tỷ lệ Linh hoạt (60/40 Split) & Kiểm thử 5 Lớp Guardrails (4.735ms)\n✔ 6. Hệ thống 4 Tầng Agentic AI: Soạn thảo Checklist, Sandbox Verifier, Technical Assessor & Fact-finding Bailiff (3.0451ms)\n✔ 7. Tính năng Yêu cầu Chỉnh sửa (Custom Revision Input) & Kiểm tra Bắt buộc File Bằng chứng (0.905ms)\n✔ 8. Agent kiểm tra định dạng link GitHub chuẩn & Tên hợp đồng có ý nghĩa (chặn ký hiệu linh tinh) (1.0015ms)\n✔ 9. Hệ thống nạp tiền VietQR (MB - NGUYEN VAN A 0000000000) & Quy trình Arbiter phê duyệt mới vào hệ thống (8.5748ms)\n✔ 10. Giảm thiểu 5 Rủi ro: Circuit Breaker, AML/KYC phân tầng, Scope Creep Detection, Sandbox Cache & Onboarding Non-tech (2.7299ms)\nℹ tests 10\nℹ suites 0\nℹ pass 10\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 240.9005",
       "stderr": ""
     },
     {
@@ -39,7 +39,7 @@
       "name": "Vercel Deployment & Route Readiness",
       "stage": "deploy-check",
       "status": "PASSED",
-      "durationMs": 106,
+      "durationMs": 168,
       "stdout": "[PowerBatch][Vercel] PASSED: Cấu hình Vercel Cloud Preview & Production hợp lệ.",
       "stderr": ""
     }
