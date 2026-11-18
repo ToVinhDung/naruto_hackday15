@@ -8,9 +8,12 @@ import {
   resolveDisputeByArbiter,
   openDisputeWithEvidence,
   escapeHtml,
-  evaluateGuardrailCommand
+  evaluateGuardrailCommand,
+  calculateFeeBreakdown,
+  buildContractMilestones,
+  submitClientTopup
 } from '../src/app.js';
-import { validateContractTitle } from '../src/agents.js';
+import { validateContractTitle, detectScopeCreepRisk } from '../src/agents.js';
 import { createPreviewServer, processAutoReleaseContracts } from '../src/server.mjs';
 
 test('P1-1: Xóa bỏ mật khẩu mặc định 123456 khỏi index.html và app.js, xác thực Trọng tài qua header token trên server', async () => {
@@ -136,3 +139,94 @@ test('P1-8 & P1-9: Server Auto-Release Worker chỉ giải ngân SUBMITTED_PASSE
   assert.deepEqual(released, [cWorker.id]);
   assert.equal(cWorker.status, 'RELEASED');
 });
+
+test('P2-1 & P2-2: REFUND_CLIENT hoàn 100% không trừ phí, và calculateFeeBreakdown hỗ trợ feePayer (FREELANCER/CLIENT/SPLIT)', () => {
+  const feeFreelancer = calculateFeeBreakdown(1000000, 'VietQR', 'VND', 'FREELANCER');
+  assert.equal(feeFreelancer.clientPays, 1000000);
+  assert.equal(feeFreelancer.netPayout, 1000000 - feeFreelancer.totalFee);
+
+  const feeClient = calculateFeeBreakdown(1000000, 'VietQR', 'VND', 'CLIENT');
+  assert.equal(feeClient.clientPays, 1000000 + feeClient.totalFee);
+  assert.equal(feeClient.netPayout, 1000000);
+
+  const feeSplit = calculateFeeBreakdown(1000000, 'VietQR', 'VND', 'SPLIT');
+  assert.equal(feeSplit.clientFee + feeSplit.freelancerFee, feeSplit.totalFee);
+
+  const state = createInitialEscrowState();
+  const c103 = state.contracts.find((c) => c.id === 'ESC-103');
+  const originalAmount = c103.amount;
+  const beforeClient = state.clientBalance;
+  const res = resolveDisputeByArbiter(state, 'ESC-103', 'REFUND_CLIENT', 100, { role: 'arbiter' });
+  assert.equal(res.ok, true);
+  assert.equal(res.buyerShare, originalAmount);
+  assert.equal(res.feeInfo.totalFee, 0);
+  assert.equal(state.clientBalance, beforeClient + originalAmount);
+});
+
+test('P2-3, P2-4 & P2-5: Chia 2 đợt đúng 40%/60%, giải ngân đúng milestone.amount tiếp theo, và nút nạp nhanh đổi thành 20.000đ', () => {
+  const milestones = buildContractMilestones(5000000, 2);
+  assert.equal(milestones[0].amount, 2000000); // 40%
+  assert.equal(milestones[1].amount, 3000000); // 60%
+
+  const state = createInitialEscrowState();
+  const c101 = state.contracts.find((c) => c.id === 'ESC-101');
+  // ESC-101: 4.000.000đ, 2 đợt -> M1 = 1.600.000đ (40%), M2 = 2.400.000đ (60%)
+  const rel1 = releasePartialMilestone(state, 'ESC-101');
+  assert.equal(rel1.ok, true);
+  assert.equal(rel1.feeInfo.gross, 1600000);
+  assert.equal(c101.amount, 2400000);
+
+  const html = fs.readFileSync('src/index.html', 'utf8');
+  assert.equal(html.includes('data-preset-amount="5000"'), false);
+  assert.equal(html.includes('data-preset-amount="20000"'), true);
+});
+
+test('P2-6: detectScopeCreepRisk đối chiếu tiêu chí hợp đồng để phát hiện chức năng ngoài phạm vi', () => {
+  const inScope = detectScopeCreepRisk('Sửa lại giao diện trang chủ cho gọn', 'Thiết kế giao diện trang chủ White UI');
+  assert.equal(inScope.hasScopeCreepRisk, false);
+
+  const outOfScope = detectScopeCreepRisk(
+    'Yêu cầu hỗ trợ thêm blockchain và oauth đăng nhập',
+    'Xây dựng API thanh toán VietQR, Coverage > 80%'
+  );
+  assert.equal(outOfScope.hasScopeCreepRisk, true);
+  assert.ok(outOfScope.outOfScopeFeatures.includes('blockchain'));
+  assert.ok(outOfScope.outOfScopeFeatures.includes('oauth'));
+});
+
+test('P2-9: Mã lệnh nạp tiền dùng crypto.randomUUID().slice(0, 8) qua server và không bị ghi đè 0 -> 35 với ??', async () => {
+  const server = createPreviewServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  try {
+    const res1 = await fetch(`http://127.0.0.1:${port}/api/topups/id`, { method: 'POST' }).then((r) => r.json());
+    const res2 = await fetch(`http://127.0.0.1:${port}/api/topups/id`, { method: 'POST' }).then((r) => r.json());
+    assert.equal(res1.ok, true);
+    assert.match(res1.topupId, /^TOPUP-[A-F0-9]{8}$/);
+    assert.notEqual(res1.topupId, res2.topupId);
+  } finally {
+    server.close();
+  }
+
+  const state = createInitialEscrowState();
+  const topup = submitClientTopup(state, { accountNumber: '0000000000', amount: 500000, method: 'VietQR' });
+  assert.equal(topup.ok, true);
+  assert.match(topup.entry.id, /^TOPUP-[A-F0-9]{8}$/);
+
+  // customBuyerPercent = 0 không bị ghi đè thành 35
+  const splitZero = resolveDisputeByArbiter(state, 'ESC-103', 'CUSTOM_SPLIT', 0, { role: 'arbiter' });
+  assert.equal(splitZero.ok, true);
+  assert.equal(splitZero.buyerShare, 0);
+});
+
+test('P2-10: Sổ cái lưu contractId và bank-ui gắn data-bank-contract để click mở đúng hợp đồng', () => {
+  const state = createInitialEscrowState();
+  const rel = releasePartialMilestone(state, 'ESC-101');
+  assert.equal(rel.ok, true);
+  assert.equal(state.ledger[0].contractId, 'ESC-101');
+
+  const bankUi = fs.readFileSync('src/bank-ui.js', 'utf8');
+  assert.ok(bankUi.includes('tx.contractId'));
+  assert.ok(bankUi.includes('data-bank-contract'));
+});
+

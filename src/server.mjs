@@ -184,6 +184,13 @@ export function createPreviewServer() {
       return;
     }
 
+    // API sinh mã lệnh nạp tiền duy nhất bằng crypto.randomUUID().slice(0, 8)
+    if (urlPath === '/api/topups/id' && req.method === 'POST') {
+      const topupId = `TOPUP-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+      sendJson(res, 200, { ok: true, topupId, memo: `NAP ESCROW ${topupId}` });
+      return;
+    }
+
     // API xác thực Trọng tài qua Header Token (x-arbiter-token hoặc Authorization: Bearer ...)
     if (urlPath === '/api/auth/arbiter' && req.method === 'POST') {
       const bearer = String(req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim();

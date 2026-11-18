@@ -192,11 +192,15 @@ const VERIFICATION_CACHE = new Map();
 
 /**
  * Phát hiện sớm dấu hiệu Scope Creep (phát sinh ngoài phạm vi hợp đồng) trong nội dung yêu cầu sửa đổi.
+ * Đối chiếu cả từ khóa bổ sung lẫn chức năng/module không nằm trong tiêu chí hợp đồng đã ký.
  */
-export function detectScopeCreepRisk(revisionComment = '') {
+export function detectScopeCreepRisk(revisionComment = '', contractCriteria = '') {
   const text = String(revisionComment || '').toLowerCase();
+  const criteriaLower = String(contractCriteria || '').toLowerCase();
   const scopeCreepKeywords = [
     'thêm tính năng',
+    'bổ sung',
+    'thêm module',
     'multi-region',
     'failover',
     'làm lại toàn bộ',
@@ -206,12 +210,40 @@ export function detectScopeCreepRisk(revisionComment = '') {
     'thanh toán mới'
   ];
   const matchedKeywords = scopeCreepKeywords.filter((kw) => text.includes(kw));
-  const hasScopeCreepRisk = matchedKeywords.length > 0;
+
+  const extraFeatureTerms = [
+    'oauth',
+    'sso',
+    'blockchain',
+    'smart contract',
+    'chatbot',
+    'ai ',
+    'pdf',
+    'excel',
+    'analytics',
+    'push notification',
+    'dark mode',
+    'multi-language',
+    'đa ngôn ngữ',
+    'graphql',
+    'redis',
+    'docker',
+    'kubernetes',
+    'webhook',
+    'mobile'
+  ];
+  const outOfScopeFeatures = criteriaLower
+    ? extraFeatureTerms.filter((term) => text.includes(term) && !criteriaLower.includes(term))
+    : [];
+
+  const allReasons = [...new Set([...matchedKeywords, ...outOfScopeFeatures])];
+  const hasScopeCreepRisk = allReasons.length > 0;
   return {
     hasScopeCreepRisk,
-    matchedKeywords,
+    matchedKeywords: allReasons,
+    outOfScopeFeatures,
     warningMessage: hasScopeCreepRisk
-      ? `⚠️ Cảnh báo Scope Creep (${matchedKeywords.join(', ')}): Yêu cầu này có dấu hiệu vượt phạm vi ban đầu. Khuyến nghị tách thành Milestone bổ sung thay vì sửa miễn phí.`
+      ? `⚠️ Cảnh báo Scope Creep (${allReasons.join(', ')}): Yêu cầu này có dấu hiệu vượt phạm vi ban đầu. Khuyến nghị tách thành Milestone bổ sung thay vì sửa miễn phí.`
       : null
   };
 }

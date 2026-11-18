@@ -357,7 +357,7 @@ export function computeProofHashAndCid(inputString) {
   return { sha256: sha256Short, ipfsCid, auditHash: `0x${hex1}${hex2}` };
 }
 
-export function calculateFeeBreakdown(grossAmount, method = 'VietQR', currency = 'VND') {
+export function calculateFeeBreakdown(grossAmount, method = 'VietQR', currency = 'VND', feePayer = 'FREELANCER') {
   const gross = Math.max(0, Math.floor(Number(grossAmount) || 0));
   const isUSDC = currency === 'mock USDC' || /USDC/i.test(method);
   const takeRateFee = Math.round(gross * 0.02);
@@ -369,18 +369,35 @@ export function calculateFeeBreakdown(grossAmount, method = 'VietQR', currency =
     gatewayOrGasFee = isCard ? Math.round(gross * 0.01) : 5000;
   }
   const totalFee = takeRateFee + gatewayOrGasFee;
-  const netPayout = Math.max(0, gross - totalFee);
+  const payer = String(feePayer || 'FREELANCER').toUpperCase();
+
+  let clientFee = 0;
+  let freelancerFee = totalFee;
+  if (payer === 'CLIENT') {
+    clientFee = totalFee;
+    freelancerFee = 0;
+  } else if (payer === 'SPLIT') {
+    clientFee = Math.floor(totalFee / 2);
+    freelancerFee = totalFee - clientFee;
+  }
+
+  const clientPays = gross + clientFee;
+  const netPayout = Math.max(0, gross - freelancerFee);
   return {
     gross,
     takeRateFee,
     gatewayOrGasFee,
     totalFee,
+    feePayer: payer,
+    clientFee,
+    freelancerFee,
+    clientPays,
     netPayout
   };
 }
 
 export function buildContractMilestones(totalAmount, count = 2) {
-  const n = Number(count) || 2;
+  const n = Number(count ?? 2);
   if (n === 1) {
     return [{ id: 'M1', name: 'M1: Bàn giao toàn bộ & Nghiệm thu (100%)', amount: totalAmount, released: false }];
   }
@@ -394,11 +411,11 @@ export function buildContractMilestones(totalAmount, count = 2) {
       { id: 'M3', name: 'M3: Triển khai Vercel Production (30%)', amount: m3, released: false }
     ];
   }
-  const m1 = Math.round(totalAmount * 0.5);
+  const m1 = Math.round(totalAmount * 0.4);
   const m2 = totalAmount - m1;
   return [
-    { id: 'M1', name: 'M1: Khởi tạo Kiến trúc & Database Schema (50%)', amount: m1, released: false },
-    { id: 'M2', name: 'M2: Endpoint API & Xử lý Giao dịch (50%)', amount: m2, released: false }
+    { id: 'M1', name: 'M1: Khởi tạo Kiến trúc & Database Schema (40%)', amount: m1, released: false },
+    { id: 'M2', name: 'M2: Endpoint API & Xử lý Giao dịch (60%)', amount: m2, released: false }
   ];
 }
 
@@ -477,7 +494,7 @@ export function toggleVaultCircuitBreaker(state, paused, reason = 'Kiểm tra b�
  * Gửi yêu cầu Nạp tiền qua mã VietQR của Hệ thống.
  * Tiền sẽ KHÔNG vào ví ngay, mà ở trạng thái PENDING_APPROVAL chờ Arbiter đối soát biến động số dư.
  */
-export function submitClientTopup(state, { accountNumber, amount, method }) {
+export function submitClientTopup(state, { accountNumber, amount, method, topupId: providedTopupId }) {
   const validation = validateTopupAmount(amount);
   if (!validation.valid) {
     return { ok: false, error: validation.error };
@@ -486,9 +503,12 @@ export function submitClientTopup(state, { accountNumber, amount, method }) {
   const isVietQR = /VietQR/i.test(method || '');
   const gatewayFee = isVietQR ? 0 : 15000;
   const netCredited = validation.amount - gatewayFee;
-  const list = state.pendingTopups || [];
-  const nextSeq = 101 + list.length;
-  const topupId = `TOPUP-${nextSeq}`;
+  const uniqueCode =
+    providedTopupId ||
+    (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? `TOPUP-${crypto.randomUUID().slice(0, 8).toUpperCase()}`
+      : `TOPUP-${Math.random().toString(16).slice(2, 10).toUpperCase()}`);
+  const topupId = uniqueCode;
   const memo = `NAP ESCROW ${topupId}`;
 
   const entry = {
@@ -867,7 +887,7 @@ export function requestContractRevision(state, contractId, reason) {
     };
   }
   const comment = (reason || '').trim() || 'Cần bổ sung tiêu chí DoD và cập nhật mã nguồn theo yêu cầu';
-  const scopeCheck = detectScopeCreepRisk(comment);
+  const scopeCheck = detectScopeCreepRisk(comment, contract.acceptanceCriteria || '');
   contract.revisionsUsed += 1;
   contract.status = 'REVISION_REQUESTED';
   contract.ciVerified = false;
@@ -880,6 +900,7 @@ export function requestContractRevision(state, contractId, reason) {
   const proof = computeProofHashAndCid(`${contractId}-rev-${contract.revisionsUsed}-${comment}`);
   state.ledger.unshift({
     id: `EV-${Math.floor(1000 + Math.random() * 9000)}`,
+    contractId: contract.id,
     time: new Date().toLocaleTimeString('vi-VN'),
     role: 'CLIENT',
     type: `Yêu cầu Chỉnh sửa (${contract.revisionsUsed}/${contract.maxRevisions})`,
@@ -899,18 +920,32 @@ export function releasePartialMilestone(state, contractId, percent = 50) {
   if (countMultiSignatures(contract.signatures) < 2) {
     return { ok: false, error: 'Chưa đủ chữ ký Multi-Sig 2-of-3 để giải ngân.' };
   }
-  const pct = Math.min(100, Math.max(10, Number(percent) || 50));
-  const grossRelease = Math.round(contract.amount * (pct / 100));
+
+  const requestedPct = Number(percent ?? 50);
+  const firstPending = (contract.milestones || []).find((m) => !m.released);
+  let grossRelease;
+  if (requestedPct >= 100) {
+    grossRelease = contract.amount;
+  } else if (firstPending && firstPending.amount > 0 && firstPending.amount <= contract.amount) {
+    grossRelease = firstPending.amount;
+  } else {
+    const pct = Math.min(100, Math.max(0, requestedPct));
+    grossRelease = Math.round(contract.amount * (pct / 100));
+  }
+
   if (grossRelease <= 0 || grossRelease > contract.amount) {
     return { ok: false, error: 'Số tiền giải ngân từng phần không hợp lệ.' };
   }
 
-  const feeInfo = calculateFeeBreakdown(grossRelease, 'Escrow Release');
+  const feeInfo = calculateFeeBreakdown(grossRelease, 'Escrow Release', 'VND', contract.feePayer || 'FREELANCER');
   contract.amount -= grossRelease;
   contract.releasedSoFar = (contract.releasedSoFar || 0) + grossRelease;
-  if (contract.milestones && contract.milestones.length > 0) {
-    const firstPending = contract.milestones.find((m) => !m.released);
-    if (firstPending) firstPending.released = true;
+  if (requestedPct >= 100) {
+    (contract.milestones || []).forEach((m) => {
+      m.released = true;
+    });
+  } else if (firstPending) {
+    firstPending.released = true;
   }
 
   contract.status = contract.amount === 0 ? 'RELEASED' : 'PARTIALLY_RELEASED';
@@ -923,9 +958,10 @@ export function releasePartialMilestone(state, contractId, percent = 50) {
   const proof = computeProofHashAndCid(`${contractId}-partial-${grossRelease}`);
   state.ledger.unshift({
     id: `EV-${Math.floor(1000 + Math.random() * 9000)}`,
+    contractId: contract.id,
     time: new Date().toLocaleTimeString('vi-VN'),
     role: 'CLIENT',
-    type: `Giải ngân (${pct}%)`,
+    type: requestedPct >= 100 ? 'Giải ngân toàn bộ (100%)' : `Giải ngân Milestone (${firstPending?.id || `${requestedPct}%`})`,
     detail: `[${contract.id}] Gross ${formatVND(grossRelease)} → Net ${formatVND(feeInfo.netPayout)} (Phí: ${formatVND(feeInfo.totalFee)})`,
     amount: feeInfo.netPayout,
     auditHash: proof.auditHash
@@ -1128,7 +1164,10 @@ export function resolveDisputeByArbiter(state, contractId, resolution, customBuy
   }
 
   const grossAmount = contract.amount;
-  const feeInfo = calculateFeeBreakdown(grossAmount, 'Arbitration Settlement');
+  const isFullRefund = resolution === 'REFUND_CLIENT';
+  const feeInfo = isFullRefund
+    ? { gross: grossAmount, takeRateFee: 0, gatewayOrGasFee: 0, totalFee: 0, netPayout: grossAmount }
+    : calculateFeeBreakdown(grossAmount, 'Arbitration Settlement', 'VND', contract.feePayer || 'FREELANCER');
   const distributable = feeInfo.netPayout;
   let buyerShare = 0;
   let sellerShare = 0;
@@ -1140,15 +1179,15 @@ export function resolveDisputeByArbiter(state, contractId, resolution, customBuy
     detailText = `Arbiter giải ngân 100% [${contract.id}] cho ${contract.freelancer} (Net: ${formatVND(sellerShare)})`;
   } else if (resolution === 'REFUND_CLIENT') {
     contract.status = 'REFUNDED';
-    buyerShare = distributable;
-    detailText = `Arbiter hoàn trả 100% [${contract.id}] về ví Client (Net: ${formatVND(buyerShare)})`;
+    buyerShare = grossAmount;
+    detailText = `Arbiter hoàn trả 100% [${contract.id}] về ví Client không trừ phí (${formatVND(buyerShare)})`;
   } else if (resolution === 'SPLIT_50_50') {
     contract.status = 'SPLIT';
     buyerShare = Math.floor(distributable / 2);
     sellerShare = distributable - buyerShare;
     detailText = `Arbiter chia 50/50 [${contract.id}]: Buyer ${formatVND(buyerShare)} • Seller ${formatVND(sellerShare)}`;
   } else if (resolution === 'CUSTOM_SPLIT') {
-    const bPct = Math.min(95, Math.max(5, Number(customBuyerPercent) || 35));
+    const bPct = Math.min(100, Math.max(0, Number(customBuyerPercent ?? 35)));
     const sPct = 100 - bPct;
     contract.status = 'SPLIT';
     buyerShare = Math.round(distributable * (bPct / 100));
@@ -1171,6 +1210,7 @@ export function resolveDisputeByArbiter(state, contractId, resolution, customBuy
   const proof = computeProofHashAndCid(`${contract.id}-${resolution}-${buyerShare}-${sellerShare}`);
   state.ledger.unshift({
     id: `EV-${Math.floor(1000 + Math.random() * 9000)}`,
+    contractId: contract.id,
     time: new Date().toLocaleTimeString('vi-VN'),
     role: 'ARBITER',
     type: 'Phán quyết Trọng tài',
@@ -2705,16 +2745,21 @@ export function initBrowserApp() {
 
   // Các Form Nghiệp vụ trong từng Vùng
   const contractAmountInput = document.getElementById('contract-amount-input');
+  const contractFeePayerInput = document.getElementById('contract-fee-payer-input');
   const previewGrossEl = document.getElementById('preview-gross');
   const previewFeeEl = document.getElementById('preview-fee');
   const previewNetEl = document.getElementById('preview-net');
 
-  contractAmountInput?.addEventListener('input', () => {
-    const feeInfo = calculateFeeBreakdown(contractAmountInput.value, 'Escrow');
-    if (previewGrossEl) previewGrossEl.textContent = formatVND(feeInfo.gross);
+  function updateContractFeePreview() {
+    const payer = contractFeePayerInput?.value || 'FREELANCER';
+    const feeInfo = calculateFeeBreakdown(contractAmountInput?.value || 0, 'Escrow', 'VND', payer);
+    if (previewGrossEl) previewGrossEl.textContent = formatVND(feeInfo.clientPays);
     if (previewFeeEl) previewFeeEl.textContent = formatVND(feeInfo.totalFee);
     if (previewNetEl) previewNetEl.textContent = formatVND(feeInfo.netPayout);
-  });
+  }
+
+  contractAmountInput?.addEventListener('input', updateContractFeePreview);
+  contractFeePayerInput?.addEventListener('change', updateContractFeePreview);
 
   const topupForm = document.getElementById('topup-form');
   const topupAccountInput = document.getElementById('topup-account-input');
@@ -2791,11 +2836,19 @@ export function initBrowserApp() {
     if (confirmModal) confirmModal.hidden = true;
     if (!pendingTopup) return;
 
-    // Gửi yêu cầu nạp tiền qua mã VietQR MB của hệ thống (Tiền CHƯA vào ví ngay, cần Arbiter xác nhận)
+    // Gửi yêu cầu nạp tiền qua mã VietQR MB của hệ thống (lấy mã TOPUP duy nhất từ server nếu có)
+    let serverTopupId;
+    try {
+      const idRes = await callDynamicApi('/api/topups/id', 'POST');
+      if (idRes?.topupId) serverTopupId = idRes.topupId;
+    } catch {
+      // Fallback sang crypto.randomUUID() cục bộ
+    }
     const result = submitClientTopup(state, {
       accountNumber: pendingTopup.accountNumber,
       amount: pendingTopup.amount,
-      method: pendingTopup.method
+      method: pendingTopup.method,
+      topupId: serverTopupId
     });
 
     if (result.ok) {
@@ -3059,18 +3112,21 @@ export function initBrowserApp() {
         const [inspDays, maxRev] = (contractInspectionInput?.value || '3|3').split('|').map(Number);
         const milestoneCount = Number(contractMilestonesInput?.value || 2);
         const sigType = contractSigInput?.value || 'EIP-712 Wallet Sig';
+        const feePayer = contractFeePayerInput?.value || 'FREELANCER';
+        const feePreview = calculateFeeBreakdown(validation.amount, 'Escrow', 'VND', feePayer);
         const newId = customCode && !state.contracts.some((c) => c.id === customCode)
           ? customCode
           : `ESC-${101 + state.contracts.length}`;
 
-        state.clientBalance -= validation.amount;
-        state.reputation.client.totalVolume += validation.amount;
+        state.clientBalance -= feePreview.clientPays;
+        state.reputation.client.totalVolume += feePreview.clientPays;
 
         state.contracts.unshift({
           id: newId,
           title,
           freelancer,
           amount: validation.amount,
+          feePayer,
           releasedSoFar: 0,
           status: 'IN_PROGRESS',
           vaultAddress: `0xVault${101 + state.contracts.length}...${decomp.onChainAnchorTx.slice(2, 6).toUpperCase()}`,
@@ -3097,11 +3153,12 @@ export function initBrowserApp() {
 
         state.ledger.unshift({
           id: `EV-${Math.floor(1000 + Math.random() * 9000)}`,
+          contractId: newId,
           time: new Date().toLocaleTimeString('vi-VN'),
           role: 'CLIENT',
           type: 'Khởi tạo Hợp đồng & Khóa Vault',
-          detail: `Mã HĐ [${newId}] "${title}" (${validation.formatted})`,
-          amount: validation.amount,
+          detail: `Mã HĐ [${newId}] "${title}" (${validation.formatted} • Bên chịu phí: ${feePayer})`,
+          amount: feePreview.clientPays,
           auditHash: decomp.onChainAnchorTx
         });
 

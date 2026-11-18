@@ -140,7 +140,10 @@ export function createBankDashboard({openZone, openContract, getState, getRole})
   }
   function renderActivities() {
     const events = getState().ledger || [];
-    const markup = tx => `<div class="bank-activity"><span class="bank-activity-icon">${bankIcon(tx.role==='ARBITER'?'shield':tx.role==='CLIENT'?'wallet':'upload')}</span><div><strong>${escapeBankText(tx.type)}</strong><p>${escapeBankText(tx.detail)}</p><small>${escapeBankText(tx.time)} · ${escapeBankText(tx.id)}</small></div><span class="bank-activity-amount">${money(tx.amount)}</span></div>`;
+    const markup = tx => {
+      const targetAttr = tx.contractId ? ` data-bank-contract="${escapeBankText(tx.contractId)}" style="cursor:pointer;" title="Mở chi tiết hợp đồng ${escapeBankText(tx.contractId)}"` : '';
+      return `<div class="bank-activity"${targetAttr}><span class="bank-activity-icon">${bankIcon(tx.role==='ARBITER'?'shield':tx.role==='CLIENT'?'wallet':'upload')}</span><div><strong>${escapeBankText(tx.type)}</strong><p>${escapeBankText(tx.detail)}</p><small>${escapeBankText(tx.time)} · ${escapeBankText(tx.id)}</small></div><span class="bank-activity-amount">${money(tx.amount)}</span></div>`;
+    };
     byId('bank-recent-activity').innerHTML = events.slice(0,3).map(markup).join('') || '<p class="bank-caught-up">Chưa có hoạt động nào.</p>';
     byId('bank-history-list').innerHTML = events.map(markup).join('') || '<p class="bank-caught-up">Chưa có giao dịch nào.</p>';
     byId('bank-history-count').textContent = `${events.length} sự kiện`;

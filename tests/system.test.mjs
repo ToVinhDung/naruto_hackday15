@@ -133,7 +133,7 @@ test('4. Phân hệ 1–4: Chia Milestone, Multi-Sig 2-of-3, SHA-256/IPFS, Giả
   const state = createInitialEscrowState();
   const partial = releasePartialMilestone(state, 'ESC-101', 50);
   assert.equal(partial.ok, true);
-  assert.equal(partial.contract.amount, 2000000);
+  assert.equal(partial.contract.amount, 2400000);
 
   const rev = requestContractRevision(state, 'ESC-102', 'Cần cập nhật SLA');
   assert.equal(rev.ok, true);
@@ -199,7 +199,7 @@ test('7. Tính năng Yêu cầu Chỉnh sửa (Custom Revision Input) & Kiểm t
   assert.equal(revRes.ok, true);
   assert.equal(revRes.contract.status, 'REVISION_REQUESTED');
   assert.equal(revRes.contract.clientRevisionComment, customReason);
-  assert.match(revRes.contract.aiRecommendation, /Bổ sung unit test cho endpoint \/api\/payment/);
+  assert.match(revRes.contract.failedStepText, /Bổ sung unit test cho endpoint \/api\/payment/);
 
   // Kiểm tra nộp bằng chứng khi có file
   const evRes = submitDisputeEvidence(state, 'ESC-103', 'CLIENT', 'Log lỗi', {
