@@ -13,7 +13,7 @@ import {
   buildContractMilestones,
   submitClientTopup
 } from '../src/app.js';
-import { validateContractTitle, detectScopeCreepRisk } from '../src/agents.js';
+import { validateContractTitle, detectScopeCreepRisk, runFactFindingBailiffAgent } from '../src/agents.js';
 import { createPreviewServer, processAutoReleaseContracts } from '../src/server.mjs';
 
 test('P1-1: Xóa bỏ mật khẩu mặc định 123456 khỏi index.html và app.js, xác thực Trọng tài qua header token trên server', async () => {
@@ -228,5 +228,34 @@ test('P2-10: Sổ cái lưu contractId và bank-ui gắn data-bank-contract đ�
   const bankUi = fs.readFileSync('src/bank-ui.js', 'utf8');
   assert.ok(bankUi.includes('tx.contractId'));
   assert.ok(bankUi.includes('data-bank-contract'));
+});
+
+test('Single Source of Truth: nộp repo GitHub rỗng (0 điểm) -> mở tranh chấp -> AI Bailiff & Phán quyết Trọng tài đồng nhất 0% Freelancer / 100% Client', () => {
+  const state = createInitialEscrowState();
+  const c = state.contracts.find((x) => x.id === 'ESC-101');
+  c.latestVerification = {
+    verifiedScore: 0,
+    passedCriteria: [],
+    failedCriteria: ['Repo GitHub rỗng, không tồn tại hoặc không có tệp kiểm thử hợp lệ'],
+    isEmptyOrInvalid: true
+  };
+
+  const openRes = openDisputeWithEvidence(state, 'ESC-101', { role: 'client' }, 'Repo rỗng 0 điểm');
+  assert.equal(openRes.ok, true);
+
+  const dossier = runFactFindingBailiffAgent(c);
+  assert.equal(dossier.verifiedCompletionPercent, 0);
+  assert.equal(dossier.recommendedSellerPercent, 0);
+  assert.equal(dossier.recommendedBuyerPercent, 100);
+  assert.match(dossier.proposalStatement, /0% cho Freelancer và hoàn trả 100% cho Client/);
+
+  // Thanh trượt / phán quyết Trọng tài áp dụng đúng 0% Freelancer / 100% Client
+  const beforeClient = state.clientBalance;
+  const lockedAmount = c.amount;
+  const resolveRes = resolveDisputeByArbiter(state, 'ESC-101', 'CUSTOM_SPLIT', dossier.recommendedBuyerPercent, { role: 'arbiter' });
+  assert.equal(resolveRes.ok, true);
+  assert.equal(resolveRes.sellerShare, 0);
+  assert.ok(state.clientBalance > beforeClient);
+  assert.ok(resolveRes.buyerShare <= lockedAmount);
 });
 

@@ -808,8 +808,16 @@ export function createInitialEscrowState() {
         proofHash: 'sha256:3e1b804d7c2a19049a7f3c2b',
         ipfsCid: 'ipfs://QmVibe3E1B804D7C2A1904',
         ciVerified: false,
-        failedStepText: 'Không đạt bài Stress Test tải đột biến 10.000 req/s (chỉ hoàn thành 70% khối lượng tiêu chí khách quan).',
-        aiRecommendation: 'Freelancer đã hoàn thành 70% khối lượng công việc được kiểm chứng; đề xuất giải ngân 65% cho Freelancer và hoàn trả 35% cho Client.',
+        latestVerification: {
+          verifiedScore: 70,
+          passedCriteria: ['UI Kit', 'DB Schema', 'Staging Latency p95=165ms'],
+          failedCriteria: ['Stress Test tải đột biến 10.000 req/s'],
+          isEmptyOrInvalid: false
+        },
+        recommendedSellerPercent: 70,
+        recommendedBuyerPercent: 30,
+        failedStepText: 'Không đạt bài Stress Test tải đột biến 10.000 req/s (hoàn thành 70% tiêu chí khách quan).',
+        aiRecommendation: 'Freelancer đã hoàn thành 70% khối lượng công việc được kiểm chứng; đề xuất giải ngân 70% cho Freelancer và hoàn trả 30% cho Client.',
         vaultFrozen: true,
         disputeReason: 'Buyer phản hồi cần kiểm tra thêm tải cao; Seller khẳng định đã đạt SLA.',
         evidences: [
@@ -839,10 +847,11 @@ export function createInitialEscrowState() {
     ledger: [
       {
         id: 'EV-9007',
+        contractId: 'ESC-103',
         time: '23:18:00',
         role: 'ARBITER',
         type: 'Tổng hợp Hồ sơ Tranh chấp',
-        detail: 'Hợp đồng ESC-103 không pass bài kiểm tra tải đột biến -> Khuyến nghị chia 65% Seller / 35% Buyer',
+        detail: 'Hợp đồng ESC-103 đạt 70% tiêu chí kiểm chứng -> Khuyến nghị chia 70% Seller / 30% Buyer',
         amount: 3000000,
         auditHash: '0x99a2d104'
       },
@@ -1621,17 +1630,23 @@ export function initBrowserApp() {
             }
           </div>`;
       } else {
+        const bailiff =
+          typeof c.recommendedBuyerPercent === 'number' && typeof c.recommendedSellerPercent === 'number'
+            ? { recommendedBuyerPercent: c.recommendedBuyerPercent, recommendedSellerPercent: c.recommendedSellerPercent }
+            : runFactFindingBailiffAgent(c);
+        const recBuyer = bailiff.recommendedBuyerPercent;
+        const recSeller = bailiff.recommendedSellerPercent;
         txModalRoleActionsEl.innerHTML =
           c.status === 'DISPUTED' && c.amount > 0
             ? `<div class="split-slider-box">
                 <div style="display:flex;justify-content:space-between;font-size:0.76rem;font-weight:700;margin-bottom:0.3rem;">
                   <span>⚖️ Phán quyết Trọng tài:</span>
-                  <span id="popup-split-label">Hoàn 35% Client / Giải ngân 65% Freelancer</span>
+                  <span id="popup-split-label">Hoàn ${recBuyer}% Client / Giải ngân ${recSeller}% Freelancer</span>
                 </div>
-                <input type="range" min="10" max="90" step="5" value="35" id="popup-split-slider" style="width:100%;margin-bottom:0.45rem;" />
+                <input type="range" min="0" max="100" step="5" value="${recBuyer}" id="popup-split-slider" style="width:100%;margin-bottom:0.45rem;" />
                 <div class="contract-actions">
-                  <button type="button" class="btn btn-purple btn-sm" data-popup-action="arbiter-ai-bailiff" data-id="${c.id}">
-                    ✓ Duyệt Khuyến nghị (65% Freelancer / 35% Client)
+                  <button type="button" class="btn btn-purple btn-sm" data-popup-action="arbiter-ai-bailiff" data-id="${c.id}" data-buyer-percent="${recBuyer}">
+                    ✓ Duyệt Khuyến nghị (${recSeller}% Freelancer / ${recBuyer}% Client)
                   </button>
                   <button type="button" class="btn btn-secondary btn-sm" data-popup-action="arbiter-custom-split" data-id="${c.id}">
                     ⚖️ Chia theo Thanh trượt
@@ -1831,30 +1846,57 @@ export function initBrowserApp() {
 
   function buildLocalDisputeSettlement(contract, evaluationReport = null) {
     const frozenAmount = Math.max(0, Number(contract?.amount || 0) - Number(contract?.releasedSoFar || 0));
+    if (!evaluationReport && contract?.latestVerification) {
+      const v = contract.latestVerification;
+      const freelancerPercent = v.isEmptyOrInvalid ? 0 : Math.max(0, Math.min(100, Math.round(Number(v.verifiedScore ?? 0))));
+      const clientPercent = 100 - freelancerPercent;
+      const freelancerAmount = Math.round((frozenAmount * freelancerPercent) / 100);
+      const clientAmount = Math.max(0, frozenAmount - freelancerAmount);
+      const breakdown = [
+        ...(v.passedCriteria || []).map((name, i) => ({
+          id: `PASS-${i + 1}`,
+          metric: name,
+          weightPercent: Math.round(freelancerPercent / Math.max(1, (v.passedCriteria || []).length)),
+          status: 'PASSED',
+          earnedPercent: Math.round(freelancerPercent / Math.max(1, (v.passedCriteria || []).length)),
+          reason: `Đạt chuẩn (${name})`
+        })),
+        ...(v.failedCriteria || []).map((name, i) => ({
+          id: `FAIL-${i + 1}`,
+          metric: name,
+          weightPercent: Math.round(clientPercent / Math.max(1, (v.failedCriteria || []).length)),
+          status: 'FAILED',
+          earnedPercent: 0,
+          reason: name
+        }))
+      ];
+      return {
+        frozenAmount,
+        productScorePercent: freelancerPercent,
+        freelancerPercent,
+        clientPercent,
+        freelancerAmount,
+        clientAmount,
+        breakdown,
+        testReportHash: v.testReportHash || contract?.proofHash || 'pending-hash'
+      };
+    }
+
     const ev = evaluationReport || {
       blocked: false,
-      deterministicScore: contract?.ciVerified ? 100 : 65,
+      deterministicScore: contract?.ciVerified ? 100 : 0,
       deterministicResults: [
         {
           id: 'OBJ-01',
           metric: 'unit_test_pass_rate',
           passed: Boolean(contract?.ciVerified),
-          weight: 50,
-          actualValue: contract?.ciVerified ? 100 : 60,
+          weight: 100,
+          actualValue: contract?.ciVerified ? 100 : 0,
           operator: '==',
           expectedValue: 100
-        },
-        {
-          id: 'OBJ-02',
-          metric: 'api_latency_ms',
-          passed: true,
-          weight: 30,
-          actualValue: 165,
-          operator: '<=',
-          expectedValue: 250
         }
       ],
-      pendingHitlCriteria: [{ id: 'SUB-01', description: 'Đánh giá cảm quan & giao diện (HITL)', weight: 20 }]
+      pendingHitlCriteria: []
     };
 
     const totalDetWeight = (ev.deterministicResults || []).reduce((s, r) => s + (Number(r.weight) || 40), 0);
@@ -2650,11 +2692,14 @@ export function initBrowserApp() {
       } catch {
         dossier = runFactFindingBailiffAgent(contract);
       }
+      contract.recommendedSellerPercent = dossier.recommendedSellerPercent;
+      contract.recommendedBuyerPercent = dossier.recommendedBuyerPercent;
       contract.failedStepText = dossier.dossierSections.automatedTestAudit;
       contract.aiRecommendation = dossier.proposalStatement;
       const proof = computeProofHashAndCid(`${cId}-dispute-${currentLoginRole}`);
       state.ledger.unshift({
         id: `EV-${Math.floor(1000 + Math.random() * 9000)}`,
+        contractId: cId,
         time: new Date().toLocaleTimeString('vi-VN'),
         role: currentLoginRole.toUpperCase(),
         type: 'Mở Tranh chấp & Đóng băng Vault',
@@ -2665,7 +2710,8 @@ export function initBrowserApp() {
     } else if (action === 'seller-sign') {
       contract.signatures.freelancer = true;
     } else if (action === 'arbiter-ai-bailiff') {
-      const r = resolveDisputeByArbiter(state, cId, 'CUSTOM_SPLIT', 35, { role: currentLoginRole });
+      const recBuyerPct = Number(btn.getAttribute('data-buyer-percent') ?? contract.recommendedBuyerPercent ?? 100);
+      const r = resolveDisputeByArbiter(state, cId, 'CUSTOM_SPLIT', recBuyerPct, { role: currentLoginRole });
       if (!r.ok) { alert(r.error); return; }
     } else if (action === 'arbiter-custom-split') {
       const slider = document.getElementById('popup-split-slider');
@@ -3237,6 +3283,28 @@ export function initBrowserApp() {
       const sb = res.sandbox || {};
       const gh = res.github || {};
 
+      const isEmptyOrInvalid = Boolean(ev.blocked || !gh.validUrl || sb.cloned === false || (sb.deliveredFilesCount || 0) === 0);
+      const verifiedScore = isEmptyOrInvalid ? 0 : Math.max(0, Math.min(100, Number(ev.deterministicScore ?? 0)));
+      const passedCriteria = (ev.deterministicResults || []).filter((r) => r.passed).map((r) => `${r.id} (${r.metric})`);
+      const failedCriteria =
+        isEmptyOrInvalid && !(ev.deterministicResults || []).some((r) => !r.passed)
+          ? ['Repo GitHub rỗng, không tồn tại hoặc không có tệp kiểm thử hợp lệ']
+          : (ev.deterministicResults || [])
+              .filter((r) => !r.passed)
+              .map((r) => `${r.id} (${r.metric}: ${r.actualValue} vs ${r.operator} ${r.expectedValue})`);
+
+      if (contract) {
+        contract.latestVerification = {
+          verifiedScore,
+          passedCriteria,
+          failedCriteria,
+          isEmptyOrInvalid,
+          recommendation: ev.recommendation,
+          testReportHash: res.testReportHash,
+          evaluatedAt: new Date().toISOString()
+        };
+      }
+
       if (!ev.blocked && gh.validUrl !== false) {
         lastVerifiedGithubKey = `${contractId}|${repoUrl}|${commitSha}`;
         lastVerifiedGithubReport = res;
@@ -3443,18 +3511,39 @@ export function initBrowserApp() {
         }
 
         const failedStep = report.toolchainSteps.find((s) => s.status !== 'PASSED');
+        const ghEval = lastVerifiedGithubReport?.evaluation;
+        const ghSandbox = lastVerifiedGithubReport?.sandbox;
+        const isEmptyOrInvalid = ghEval
+          ? Boolean(ghEval.blocked || ghSandbox?.cloned === false || (ghSandbox?.deliveredFilesCount || 0) === 0)
+          : Boolean(!report.isGitHubValid || report.passRatePercent === 0);
+        const verifiedScore = isEmptyOrInvalid
+          ? 0
+          : Number(ghEval ? ghEval.deterministicScore : report.passRatePercent ?? 0);
+
+        if (!contract.latestVerification) {
+          contract.latestVerification = {
+            verifiedScore,
+            passedCriteria: (report.toolchainSteps || []).filter((s) => s.status === 'PASSED').map((s) => s.tool),
+            failedCriteria: failedStep ? [`Bước ${failedStep.step} (${failedStep.tool}): ${failedStep.log}`] : [],
+            isEmptyOrInvalid,
+            testReportHash: lastVerifiedGithubReport?.testReportHash || report.testReportHash,
+            evaluatedAt: new Date().toISOString()
+          };
+        }
+
+        const effectivePassed = report.allObjectivePassed && !isEmptyOrInvalid && verifiedScore > 0;
 
         contract.deliverableUrl = url;
         contract.commitHash = commit;
         contract.deliverableNote = note;
         contract.proofHash = report.testReportHash;
         contract.ipfsCid = report.ipfsReportCid;
-        contract.ciVerified = report.allObjectivePassed;
+        contract.ciVerified = effectivePassed;
         contract.failedStepText = failedStep ? `Bước ${failedStep.step} (${failedStep.tool}): ${failedStep.log}` : null;
-        contract.aiRecommendation = report.allObjectivePassed ? null : report.recommendation.message;
+        contract.aiRecommendation = effectivePassed ? null : report.recommendation.message;
         contract.signatures.freelancer = true;
-        contract.status = report.allObjectivePassed ? 'SUBMITTED' : 'REVISION_REQUESTED';
-        contract.timelockRemaining = report.allObjectivePassed
+        contract.status = effectivePassed ? 'SUBMITTED' : 'REVISION_REQUESTED';
+        contract.timelockRemaining = effectivePassed
           ? `Còn ${contract.inspectionDays} ngày (Auto-Release)`
           : 'Tạm dừng chờ sửa lỗi theo khuyến nghị';
 

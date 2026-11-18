@@ -184,9 +184,9 @@ test('6. Hệ thống 4 Tầng Agentic AI: Soạn thảo Checklist, Sandbox Veri
   const disputed = state.contracts.find((c) => c.id === 'ESC-103');
   const dossier = runFactFindingBailiffAgent(disputed);
   assert.equal(dossier.verifiedCompletionPercent, 70);
-  assert.equal(dossier.recommendedSellerPercent, 65);
-  assert.equal(dossier.recommendedBuyerPercent, 35);
-  assert.match(dossier.proposalStatement, /65% cho Freelancer và hoàn trả 35% cho Client/);
+  assert.equal(dossier.recommendedSellerPercent, 70);
+  assert.equal(dossier.recommendedBuyerPercent, 30);
+  assert.match(dossier.proposalStatement, /70% cho Freelancer và hoàn trả 30% cho Client/);
 });
 
 test('7. Tính năng Yêu cầu Chỉnh sửa (Custom Revision Input) & Kiểm tra Bắt buộc File Bằng chứng', () => {

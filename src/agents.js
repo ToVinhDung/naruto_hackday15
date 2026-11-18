@@ -368,7 +368,7 @@ export function runAutonomousVerificationAndAssessor(submission = {}, scenario =
 /**
  * TẦNG 4: Thừa phát lại Thu thập Chứng cứ (Autonomous Fact-finding Bailiff)
  * Tự động tổng hợp Hồ sơ Vụ việc (Dispute Dossier) và đề xuất tỷ lệ phân chia quỹ
- * (VD: Hoàn thành 70% khối lượng công việc được kiểm chứng -> đề xuất 65% Freelancer / 35% Client)
+ * dựa trên Single Source of Truth `contract.latestVerification` (0 điểm -> 0% Freelancer / 100% Client).
  */
 export function runFactFindingBailiffAgent(contract) {
   const c = contract || {
@@ -381,13 +381,42 @@ export function runFactFindingBailiffAgent(contract) {
     evidences: []
   };
 
-  const verifiedCompletionPercent = 70;
-  const recommendedSellerPercent = 65;
-  const recommendedBuyerPercent = 35;
+  const v = c.latestVerification;
+  let verifiedCompletionPercent = 0;
+  let passedCriteria = [];
+  let failedCriteria = [];
+  let isEmptyOrInvalid = false;
+
+  if (v && typeof v === 'object') {
+    isEmptyOrInvalid = Boolean(v.isEmptyOrInvalid);
+    verifiedCompletionPercent = isEmptyOrInvalid ? 0 : Math.max(0, Math.min(100, Math.round(Number(v.verifiedScore ?? 0))));
+    passedCriteria = Array.isArray(v.passedCriteria) ? v.passedCriteria : [];
+    failedCriteria = Array.isArray(v.failedCriteria) ? v.failedCriteria : [];
+  } else if (c.ciVerified === true && c.deliverableUrl) {
+    verifiedCompletionPercent = 100;
+    passedCriteria = ['Vượt qua kiểm thử bàn giao'];
+  } else {
+    isEmptyOrInvalid = !c.deliverableUrl;
+    verifiedCompletionPercent = 0;
+    failedCriteria = [c.failedStepText || 'Chưa có kết quả kiểm thử đạt chuẩn'];
+  }
+
+  const recommendedSellerPercent = verifiedCompletionPercent === 0 || isEmptyOrInvalid ? 0 : verifiedCompletionPercent;
+  const recommendedBuyerPercent = 100 - recommendedSellerPercent;
 
   const dossierHashInfo = computeProofHashAndCid(
     `dossier-${c.id}-${verifiedCompletionPercent}-${recommendedSellerPercent}`
   );
+
+  const automatedTestAudit =
+    recommendedSellerPercent === 0
+      ? `0% tiêu chí đạt chuẩn${failedCriteria.length > 0 ? `: ${failedCriteria.join('; ')}` : ' (Repo rỗng hoặc không hợp lệ).'}`
+      : `${verifiedCompletionPercent}% tiêu chí đạt chuẩn (Đạt: ${passedCriteria.join(', ') || 'OK'}${failedCriteria.length > 0 ? `; Chưa đạt: ${failedCriteria.join(', ')}` : ''}).`;
+
+  const proposalStatement =
+    recommendedSellerPercent === 0
+      ? `Sản phẩm đạt 0% tiêu chí kiểm chứng (${failedCriteria[0] || 'Repo rỗng / không hợp lệ'}); đề xuất giải ngân 0% cho Freelancer và hoàn trả 100% cho Client.`
+      : `Freelancer đã hoàn thành ${verifiedCompletionPercent}% khối lượng công việc được kiểm chứng; đề xuất giải ngân ${recommendedSellerPercent}% cho Freelancer và hoàn trả ${recommendedBuyerPercent}% cho Client.`;
 
   return {
     agentName: 'FactFindingBailiffAgent (Tầng 4 — Tranh chấp)',
@@ -399,13 +428,13 @@ export function runFactFindingBailiffAgent(contract) {
     recommendedBuyerPercent,
     dossierSections: {
       signedChecklistAnchor: `Đã đối chiếu Hợp đồng gốc [${c.id}] & Checklist Hash bất biến (${c.acceptanceCriteria}).`,
-      deliveryAndCommitTimeline: `Freelancer (${c.freelancer}) đã nộp 6 commits (mới nhất: ${c.commitHash || 'commit#3e1b804'}) đúng hạn mốc Milestone 1 & 2.`,
-      automatedTestAudit: `70% tiêu chí Deterministic đã vượt qua trong Sandbox (Pass: UI Kit, DB Schema, Staging Latency p95=165ms; Chưa đạt trọn vẹn: Stress Test tải đột biến 10.000 req/s).`,
-      scopeCreepAnalysis: `Phát hiện yêu cầu sửa đổi lần thứ 3 của Client ("Thêm cụm multi-region failover") vượt quá phạm vi cam kết ban đầu (Scope Creep).`,
+      deliveryAndCommitTimeline: `Freelancer (${c.freelancer}) nộp link: ${c.deliverableUrl || 'Chưa có'} (commit: ${c.commitHash || 'N/A'}).`,
+      automatedTestAudit,
+      scopeCreepAnalysis: c.scopeCreepWarning || 'Không ghi nhận phát sinh ngoài phạm vi hợp đồng.',
       evidenceFilesCount: (c.evidences || []).length
     },
-    proposalStatement: `Freelancer đã hoàn thành ${verifiedCompletionPercent}% khối lượng công việc được kiểm chứng; đề xuất giải ngân ${recommendedSellerPercent}% cho Freelancer và hoàn trả ${recommendedBuyerPercent}% cho Client.`,
-    hitlNote: 'Trọng tài con người (Arbiter) chỉ cần xem xét tính hợp lý của Hồ sơ Vụ việc và nhấn nút Ký duyệt (HITL).'
+    proposalStatement,
+    hitlNote: 'Trọng tài con người (Arbiter) xem xét Hồ sơ Vụ việc và nhấn nút Ký duyệt (HITL).'
   };
 }
 
@@ -668,9 +697,14 @@ export async function runFactFindingBailiffAgentLive(contract) {
   const fallback = runFactFindingBailiffAgent(contract);
   const c = contract || {};
 
+  // Nếu 0 điểm hoặc repo rỗng/không hợp lệ, giữ nguyên đề xuất 0% Freelancer / 100% Client
+  if (fallback.recommendedSellerPercent === 0) {
+    return { ...fallback, liveAi: false };
+  }
+
   const prompt = [
     'Bạn là FactFindingBailiffAgent (Thừa phát lại AI) trong hệ thống Smart Escrow. Hãy phân tích tranh chấp sau và đề xuất tỷ lệ chia quỹ công bằng cho Trọng tài con người (HITL) bằng tiếng Việt.',
-    `Hợp đồng: ${JSON.stringify({ id: c.id || fallback.contractId, title: c.title || fallback.contractTitle, freelancer: c.freelancer, amount: c.amount, acceptanceCriteria: c.acceptanceCriteria, commitHash: c.commitHash, evidencesCount: (c.evidences || []).length })}`,
+    `Hợp đồng: ${JSON.stringify({ id: c.id || fallback.contractId, title: c.title || fallback.contractTitle, freelancer: c.freelancer, amount: c.amount, acceptanceCriteria: c.acceptanceCriteria, commitHash: c.commitHash, latestVerification: c.latestVerification || null, evidencesCount: (c.evidences || []).length })}`,
     'Trả về đúng JSON object:',
     '{',
     '  "verifiedCompletionPercent": number (0..100),',
