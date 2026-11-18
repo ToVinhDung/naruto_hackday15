@@ -13,6 +13,39 @@ const ALLOWED_TEST_COMMANDS = new Map([
 ]);
 
 /**
+ * Kiểm tra chống SSRF cho endpoint kiểm tra GitHub:
+ * - Bắt buộc giao thức https: và hostname chính xác là github.com
+ * - commitSha phải là 'HEAD' hoặc chuỗi hex 40 ký tự
+ */
+export function validateStrictGitHubVerifyInput({ repoUrl, commitSha = 'HEAD' } = {}) {
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(String(repoUrl || '').trim());
+  } catch {
+    return { valid: false, error: 'URL GitHub không hợp lệ.' };
+  }
+
+  if (parsedUrl.protocol !== 'https:' || parsedUrl.hostname.toLowerCase() !== 'github.com') {
+    return { valid: false, error: 'Chặn SSRF: Chỉ chấp nhận URL https://github.com/...' };
+  }
+  if (parsedUrl.username || parsedUrl.password || parsedUrl.port) {
+    return { valid: false, error: 'URL GitHub không được chứa thông tin xác thực hoặc cổng tùy chỉnh.' };
+  }
+
+  const parsedRepo = parseGitHubUrl(parsedUrl.toString());
+  if (!parsedRepo.valid) {
+    return { valid: false, error: 'URL phải có dạng https://github.com/{owner}/{repo}.' };
+  }
+
+  const sha = String(commitSha || 'HEAD').trim();
+  if (sha !== 'HEAD' && !/^[a-f0-9]{40}$/i.test(sha)) {
+    return { valid: false, error: 'commitSha phải là HEAD hoặc chuỗi hex 40 ký tự hợp lệ.' };
+  }
+
+  return { valid: true, parsedRepo, commitSha: sha };
+}
+
+/**
  * Bóc tách owner, repo, commitSha hoặc pullNumber từ URL GitHub.
  */
 export function parseGitHubUrl(url) {
@@ -191,7 +224,7 @@ export async function runSandboxTests({
         cwd: tmpDir,
         timeout: effectiveTestTimeout,
         killSignal: 'SIGKILL',
-        env: sanitizedEnv
+        env: { PATH: process.env.PATH || '', NODE_ENV: 'test' }
       });
       stdout = res.stdout || '';
       stderr = res.stderr || '';

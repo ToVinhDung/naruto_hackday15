@@ -24,7 +24,7 @@ import { evaluateSubmission } from './engine/ruleEngine.mjs';
 import { refineVagueCriteria, loadHistoricalBaselines } from './engine/criteriaRefiner.mjs';
 import { executeWithFallback } from './engine/resilienceGuard.mjs';
 import { calculateFrozenFundSplit } from './engine/settlementCalculator.mjs';
-import { parseGitHubUrl, fetchGitHubCommitDetails, runSandboxTests } from './tools/githubVerifier.mjs';
+import { parseGitHubUrl, validateStrictGitHubVerifyInput, fetchGitHubCommitDetails, runSandboxTests } from './tools/githubVerifier.mjs';
 import { AGENT_VERIFICATION_TOOLS, executeAgentTool } from './tools/agentTools.mjs';
 import { anchorProofOnFuji } from './blockchain/fujiBridge.mjs';
 
@@ -162,17 +162,73 @@ export function processAutoReleaseContracts(state, nowMs = Date.now()) {
   return releasedIds;
 }
 
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'no-referrer'
+};
+
 function sendJson(res, statusCode, data) {
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store'
+    'Cache-Control': 'no-store',
+    ...SECURITY_HEADERS
   });
   res.end(JSON.stringify(data));
 }
 
+function createRateLimiter() {
+  const buckets = new Map();
+  return function checkRateLimit(req, urlPath) {
+    const isHeavy = /\/(verify-github|refine-criteria|suggest-criteria)$/.test(urlPath);
+    const limit = isHeavy ? 5 : 60;
+    const windowMs = 60000;
+    const ip = req.socket?.remoteAddress || '127.0.0.1';
+    const key = `${ip}:${isHeavy ? 'heavy' : 'api'}`;
+    const now = Date.now();
+    const entries = (buckets.get(key) || []).filter((ts) => now - ts < windowMs);
+    if (entries.length >= limit) {
+      return { allowed: false, limit };
+    }
+    entries.push(now);
+    buckets.set(key, entries);
+    return { allowed: true, limit };
+  };
+}
+
+function verifyWriteAuthorization(req) {
+  const claimedRole = String(req.headers['x-user-role'] || '').toLowerCase();
+  const bearer = String(req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim();
+  const token = String(req.headers['x-arbiter-token'] || bearer || '').trim();
+  if (claimedRole === 'arbiter' || token) {
+    const expectedToken = process.env.ARBITER_AUTH_TOKEN || 'naruto';
+    if (!timingSafeMatch(token, expectedToken)) {
+      return { authorized: false, error: 'Unauthorized: Token Trọng tài không hợp lệ.' };
+    }
+  }
+  return { authorized: true };
+}
+
 export function createPreviewServer() {
+  const checkRateLimit = createRateLimiter();
+
   return http.createServer(async (req, res) => {
     const urlPath = (req.url || '/').split('?')[0];
+
+    if (urlPath.startsWith('/api/')) {
+      const rate = checkRateLimit(req, urlPath);
+      if (!rate.allowed) {
+        sendJson(res, 429, { ok: false, error: `Rate limit exceeded (tối đa ${rate.limit} req/phút).` });
+        return;
+      }
+      if (req.method === 'POST' && urlPath !== '/api/auth/arbiter') {
+        const auth = verifyWriteAuthorization(req);
+        if (!auth.authorized) {
+          sendJson(res, 401, { ok: false, error: auth.error });
+          return;
+        }
+      }
+    }
 
     if (urlPath === '/api/health') {
       sendJson(res, 200, {
@@ -249,7 +305,7 @@ export function createPreviewServer() {
         const result = await runScopeDecomposerAgentLive(brief);
         sendJson(res, 200, result);
       } catch (err) {
-        sendJson(res, 400, { error: err.message });
+        sendJson(res, err.statusCode || 400, { error: err.message });
       }
       return;
     }
@@ -261,7 +317,7 @@ export function createPreviewServer() {
         const result = await runAutonomousVerificationAndAssessorLive(submission, scenario);
         sendJson(res, 200, result);
       } catch (err) {
-        sendJson(res, 400, { error: err.message });
+        sendJson(res, err.statusCode || 400, { error: err.message });
       }
       return;
     }
@@ -273,7 +329,7 @@ export function createPreviewServer() {
         const result = await runFactFindingBailiffAgentLive(contract);
         sendJson(res, 200, result);
       } catch (err) {
-        sendJson(res, 400, { error: err.message });
+        sendJson(res, err.statusCode || 400, { error: err.message });
       }
       return;
     }
@@ -324,6 +380,12 @@ export function createPreviewServer() {
         const commitSha = body.commitSha || 'HEAD';
         const testCommand = body.testCommand || 'node --test';
         const agreementId = body.agreementId || milestoneId;
+
+        const strictCheck = validateStrictGitHubVerifyInput({ repoUrl, commitSha });
+        if (!strictCheck.valid) {
+          sendJson(res, 400, { ok: false, error: strictCheck.error });
+          return;
+        }
 
         const baselinesDir = path.join(ROOT_DIR, 'data', 'baselines');
         let baseline = loadBaseline(agreementId, milestoneId, { baseDir: baselinesDir });
@@ -457,7 +519,7 @@ export function createPreviewServer() {
           fujiAnchor
         });
       } catch (err) {
-        sendJson(res, 400, { error: err.message });
+        sendJson(res, err.statusCode || 400, { error: err.message });
       }
       return;
     }
@@ -604,7 +666,8 @@ export function createPreviewServer() {
     const ext = path.extname(safePath);
     res.writeHead(200, {
       'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
-      'X-Antigravity-Engine': 'PowerBatch-v1.0'
+      'X-Antigravity-Engine': 'PowerBatch-v1.0',
+      ...SECURITY_HEADERS
     });
     res.end(fs.readFileSync(safePath));
   });

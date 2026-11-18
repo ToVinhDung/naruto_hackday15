@@ -290,3 +290,60 @@ test('buildConsistentAgentRecommendation: không bao giờ mâu thuẫn giữa t
   assert.match(passRec.message, /giải ngân/);
 });
 
+test('Defense-in-Depth: Security Headers, Anti-SSRF, Rate Limiter (5/phút) và tách biệt Backend/Frontend', async () => {
+  const appJs = fs.readFileSync('src/app.js', 'utf8');
+  assert.equal(/from\s+['"]\.\/tools\//.test(appJs), false);
+  assert.equal(/from\s+['"]\.\/blockchain\//.test(appJs), false);
+  assert.equal(fs.existsSync('.env.example'), true);
+
+  const server = createPreviewServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  try {
+    // 1. Security headers
+    const healthRes = await fetch(`http://127.0.0.1:${port}/api/health`);
+    assert.equal(healthRes.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(healthRes.headers.get('x-frame-options'), 'DENY');
+
+    // 2. Unauthorized arbiter write
+    const unauthRes = await fetch(`http://127.0.0.1:${port}/api/milestones/ESC-101/dispute-recommendation`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-user-role': 'arbiter' },
+      body: JSON.stringify({ frozenAmount: 1000000 })
+    });
+    assert.equal(unauthRes.status, 401);
+
+    // 3. Anti-SSRF trên /verify-github
+    const ssrfRes = await fetch(`http://127.0.0.1:${port}/api/milestones/ESC-101/verify-github`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repoUrl: 'http://169.254.169.254/latest/meta-data', commitSha: 'HEAD' })
+    });
+    assert.equal(ssrfRes.status, 400);
+
+    const badShaRes = await fetch(`http://127.0.0.1:${port}/api/milestones/ESC-101/verify-github`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repoUrl: 'https://github.com/vercel/next.js', commitSha: 'not-a-40-hex-sha' })
+    });
+    assert.equal(badShaRes.status, 400);
+
+    // 4. Rate Limiter (5 req/phút cho heavy endpoints -> req thứ 6 bị 429)
+    for (let i = 0; i < 3; i++) {
+      await fetch(`http://127.0.0.1:${port}/api/milestones/ESC-101/verify-github`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repoUrl: 'https://evil.com/a/b', commitSha: 'HEAD' })
+      });
+    }
+    const rateLimitedRes = await fetch(`http://127.0.0.1:${port}/api/milestones/ESC-101/verify-github`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repoUrl: 'https://evil.com/a/b', commitSha: 'HEAD' })
+    });
+    assert.equal(rateLimitedRes.status, 429);
+  } finally {
+    server.close();
+  }
+});
+
