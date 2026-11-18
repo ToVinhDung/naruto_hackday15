@@ -15,7 +15,8 @@ import {
   runFactFindingBailiffAgent,
   isValidGitHubUrl,
   validateContractTitle,
-  detectScopeCreepRisk
+  detectScopeCreepRisk,
+  buildConsistentAgentRecommendation
 } from './agents.js';
 
 export {
@@ -25,7 +26,8 @@ export {
   runFactFindingBailiffAgent,
   isValidGitHubUrl,
   validateContractTitle,
-  detectScopeCreepRisk
+  detectScopeCreepRisk,
+  buildConsistentAgentRecommendation
 };
 
 /**
@@ -1429,11 +1431,33 @@ export function initBrowserApp() {
    */
   function renderAgentAlertIfFailed(c) {
     const hasFailedStep = c.status === 'REVISION_REQUESTED' || c.status === 'DISPUTED' || c.ciVerified === false;
-    if (!hasFailedStep || !c.aiRecommendation) return '';
+    if (!hasFailedStep) {
+      if (c.ciVerified === true && c.aiRecommendation) {
+        return `
+          <div class="alert-box alert-success" style="margin-top:0.4rem;">
+            <div><strong>✅ Đã đạt kiểm thử tự động:</strong> Đủ 100% tiêu chí khách quan.</div>
+            <div style="margin-top:0.2rem;"><strong>💡 Khuyến nghị của AI Agent:</strong> "${escapeHtml(c.aiRecommendation)}"</div>
+          </div>`;
+      }
+      return '';
+    }
+    if (!c.aiRecommendation && !c.failedStepText) return '';
+
+    const v = c.latestVerification;
+    const recText =
+      !c.aiRecommendation || /PASS_100|xuất sắc|Khuyến nghị giải ngân/i.test(c.aiRecommendation)
+        ? buildConsistentAgentRecommendation({
+            allObjectivePassed: false,
+            passedCount: v?.passedCriteria?.length || 0,
+            totalCount: (v?.passedCriteria?.length || 0) + (v?.failedCriteria?.length || 1),
+            failedReasons: v?.failedCriteria?.length ? v.failedCriteria : [c.failedStepText || 'Chưa đạt tiêu chí kỹ thuật']
+          }).message
+        : c.aiRecommendation;
+
     return `
       <div class="alert-box alert-error" style="margin-top:0.4rem;">
         <div><strong>⚠️ Thông báo không đạt:</strong> ${escapeHtml(c.failedStepText || 'Phát hiện tiêu chí chưa vượt qua kiểm thử.')}</div>
-        <div style="margin-top:0.2rem;"><strong>💡 Khuyến nghị của AI Agent:</strong> "${escapeHtml(c.aiRecommendation)}"</div>
+        <div style="margin-top:0.2rem;"><strong>💡 Khuyến nghị của AI Agent:</strong> "${escapeHtml(recText)}"</div>
       </div>`;
   }
 
@@ -2715,7 +2739,16 @@ export function initBrowserApp() {
       contract.recommendedSellerPercent = dossier.recommendedSellerPercent;
       contract.recommendedBuyerPercent = dossier.recommendedBuyerPercent;
       contract.failedStepText = dossier.dossierSections.automatedTestAudit;
-      contract.aiRecommendation = dossier.proposalStatement;
+      if (dossier.recommendedSellerPercent === 0) {
+        contract.aiRecommendation = buildConsistentAgentRecommendation({
+          allObjectivePassed: false,
+          passedCount: 0,
+          totalCount: contract.latestVerification?.failedCriteria?.length || 1,
+          failedReasons: contract.latestVerification?.failedCriteria || [dossier.dossierSections.automatedTestAudit]
+        }).message;
+      } else {
+        contract.aiRecommendation = dossier.proposalStatement;
+      }
       const proof = computeProofHashAndCid(`${cId}-dispute-${currentLoginRole}`);
       state.ledger.unshift({
         id: `EV-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -3572,6 +3605,18 @@ export function initBrowserApp() {
         }
 
         const effectivePassed = report.allObjectivePassed && !isEmptyOrInvalid && verifiedScore > 0;
+        const consistentRec = buildConsistentAgentRecommendation({
+          allObjectivePassed: effectivePassed,
+          passedCount: contract.latestVerification?.passedCriteria?.length || (effectivePassed ? 4 : 0),
+          totalCount:
+            (contract.latestVerification?.passedCriteria?.length || 0) +
+              (contract.latestVerification?.failedCriteria?.length || 0) || 4,
+          failedReasons: contract.latestVerification?.failedCriteria?.length
+            ? contract.latestVerification.failedCriteria
+            : failedStep
+            ? [`Bước ${failedStep.step} (${failedStep.tool}): ${failedStep.log}`]
+            : ['Chưa đạt 100% tiêu chí kỹ thuật']
+        });
 
         contract.deliverableUrl = url;
         contract.commitHash = commit;
@@ -3579,8 +3624,12 @@ export function initBrowserApp() {
         contract.proofHash = report.testReportHash;
         contract.ipfsCid = report.ipfsReportCid;
         contract.ciVerified = effectivePassed;
-        contract.failedStepText = failedStep ? `Bước ${failedStep.step} (${failedStep.tool}): ${failedStep.log}` : null;
-        contract.aiRecommendation = effectivePassed ? null : report.recommendation.message;
+        contract.failedStepText = effectivePassed
+          ? null
+          : failedStep
+          ? `Bước ${failedStep.step} (${failedStep.tool}): ${failedStep.log}`
+          : (contract.latestVerification?.failedCriteria || []).join('; ');
+        contract.aiRecommendation = effectivePassed ? null : consistentRec.message;
         contract.signatures.freelancer = true;
         contract.status = effectivePassed ? 'SUBMITTED' : 'REVISION_REQUESTED';
         contract.timelockRemaining = effectivePassed
@@ -3589,12 +3638,11 @@ export function initBrowserApp() {
 
         state.ledger.unshift({
           id: `EV-${Math.floor(1000 + Math.random() * 9000)}`,
+          contractId: contract.id,
           time: new Date().toLocaleTimeString('vi-VN'),
           role: 'FREELANCER',
-          type: report.allObjectivePassed ? 'Nộp Bàn giao (Pass 100%)' : 'Nộp Bàn giao (Không Pass Kiểm thử)',
-          detail: `[${contract.id}] ${
-            report.allObjectivePassed ? 'Vượt qua toàn bộ kiểm thử' : report.recommendation.message
-          }`,
+          type: effectivePassed ? 'Nộp Bàn giao (Pass 100%)' : 'Nộp Bàn giao (Không Pass Kiểm thử)',
+          detail: `[${contract.id}] ${consistentRec.message}`,
           amount: contract.amount,
           auditHash: report.testReportHash.slice(7, 17)
         });

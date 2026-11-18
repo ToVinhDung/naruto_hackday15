@@ -14,7 +14,7 @@ import {
   buildContractMilestones,
   submitClientTopup
 } from '../src/app.js';
-import { validateContractTitle, detectScopeCreepRisk, runFactFindingBailiffAgent } from '../src/agents.js';
+import { validateContractTitle, detectScopeCreepRisk, runFactFindingBailiffAgent, buildConsistentAgentRecommendation } from '../src/agents.js';
 import { createPreviewServer, processAutoReleaseContracts } from '../src/server.mjs';
 
 test('P1-1: Xóa bỏ mật khẩu mặc định 123456 khỏi index.html và app.js, xác thực Trọng tài qua header token trên server', async () => {
@@ -264,5 +264,29 @@ test('Single Source of Truth: nộp repo GitHub rỗng (0 điểm) -> mở tranh
   assert.equal(resolveRes.sellerShare, 0);
   assert.ok(state.clientBalance > beforeClient);
   assert.ok(resolveRes.buyerShare <= lockedAmount);
+});
+
+test('buildConsistentAgentRecommendation: không bao giờ mâu thuẫn giữa trạng thái không đạt và lời khuyến nghị', () => {
+  const failRec = buildConsistentAgentRecommendation({
+    allObjectivePassed: false,
+    passedCount: 1,
+    totalCount: 3,
+    failedReasons: ['unit_test_pass_rate < 100']
+  });
+  assert.equal(failRec.passed, false);
+  assert.equal(failRec.alertClass, 'alert-error');
+  assert.equal(failRec.decision, 'REQUEST_FIX');
+  assert.equal(failRec.message.includes('PASS_100'), false);
+  assert.equal(/Khuyến nghị giải ngân/i.test(failRec.message), false);
+
+  const passRec = buildConsistentAgentRecommendation({
+    allObjectivePassed: true,
+    passedCount: 3,
+    totalCount: 3
+  });
+  assert.equal(passRec.passed, true);
+  assert.equal(passRec.alertClass, 'alert-success');
+  assert.equal(passRec.decision, 'RECOMMEND_RELEASE');
+  assert.match(passRec.message, /giải ngân/);
 });
 

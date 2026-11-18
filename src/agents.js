@@ -249,6 +249,44 @@ export function detectScopeCreepRisk(revisionComment = '', contractCriteria = ''
 }
 
 /**
+ * Hàm duy nhất sinh đồng thời trạng thái và lời khuyến nghị nhất quán từ kết quả kiểm thử thực tế.
+ * Đảm bảo khi allObjectivePassed === false tuyệt đối không chứa PASS_100 hay khuyến nghị giải ngân.
+ */
+export function buildConsistentAgentRecommendation({
+  allObjectivePassed = false,
+  passedCount = 0,
+  totalCount = 0,
+  failedReasons = []
+} = {}) {
+  const passed = Math.max(0, Number(passedCount) || 0);
+  const total = Math.max(0, Number(totalCount) || 0);
+  const reasons = (Array.isArray(failedReasons) ? failedReasons : [failedReasons])
+    .map((r) => String(r || '').trim())
+    .filter(Boolean);
+
+  if (!allObjectivePassed) {
+    const reasonText = reasons.length > 0 ? reasons.join('; ') : 'chưa đạt đủ 100% tiêu chí kiểm chứng';
+    return {
+      passed: false,
+      alertClass: 'alert-error',
+      statusLabel: `⚠️ Không đạt (${passed}/${total || 1} tiêu chí)`,
+      decision: 'REQUEST_FIX',
+      targetRole: 'FREELANCER (Seller)',
+      message: `Phát hiện tiêu chí kỹ thuật chưa đạt (${reasonText}). Đề xuất yêu cầu Freelancer sửa lỗi hoặc hoàn trả quỹ cho Client nếu mở tranh chấp.`
+    };
+  }
+
+  return {
+    passed: true,
+    alertClass: 'alert-success',
+    statusLabel: `✅ Đạt 100% (${passed}/${total || passed} tiêu chí)`,
+    decision: 'RECOMMEND_RELEASE',
+    targetRole: 'CLIENT (Buyer)',
+    message: `Sản phẩm đã vượt qua ${passed}/${total || passed} tiêu chí kỹ thuật khách quan. Đủ điều kiện để Client nghiệm thu và giải ngân thanh toán cho Freelancer.`
+  };
+}
+
+/**
  * TẦNG 2 & TẦNG 3:
  * - Tầng 2 (Autonomous Verification Pipeline): Chạy chuỗi công cụ Git API -> Docker/Firecracker Sandbox -> cURL -> Metadata
  *   (Kiểm tra xem link nộp có phải link GitHub chuẩn không trước khi clone vào Sandbox, kèm Cache theo commitHash để giảm độ trễ & chi phí)
@@ -668,8 +706,20 @@ export async function runAutonomousVerificationAndAssessorLive(submission = {}, 
   const passRatePercent = Math.round((objectivePassed / objectiveTotal) * 100);
   const allObjectivePassed = objectivePassed === objectiveTotal && ai.data.recommendation.decision === 'RECOMMEND_RELEASE';
 
+  const steps = ai.data.toolchainSteps.slice(0, 4);
+  const failedReasons = steps
+    .filter((s) => s.status !== 'PASSED')
+    .map((s) => s.log || s.tool)
+    .filter(Boolean);
+  const consistentRec = buildConsistentAgentRecommendation({
+    allObjectivePassed,
+    passedCount: objectivePassed,
+    totalCount: objectiveTotal,
+    failedReasons
+  });
+
   const proofInfo = computeProofHashAndCid(
-    JSON.stringify({ commitHash, repoUrl, scenario, passRatePercent, recommendation: ai.data.recommendation })
+    JSON.stringify({ commitHash, repoUrl, scenario, passRatePercent, recommendation: consistentRec })
   );
 
   return {
@@ -682,8 +732,12 @@ export async function runAutonomousVerificationAndAssessorLive(submission = {}, 
     passRatePercent,
     objectivePassed,
     objectiveTotal,
-    toolchainSteps: ai.data.toolchainSteps.slice(0, 4),
-    recommendation: ai.data.recommendation,
+    toolchainSteps: steps,
+    recommendation: {
+      targetRole: consistentRec.targetRole,
+      decision: consistentRec.decision,
+      message: consistentRec.message
+    },
     testReportHash: proofInfo.sha256,
     proofRegistryOnChainTx: `ProofRegistry::record(${proofInfo.auditHash})`,
     ipfsReportCid: proofInfo.ipfsCid
