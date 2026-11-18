@@ -195,7 +195,7 @@ export function createPreviewServer() {
     if (urlPath === '/api/auth/arbiter' && req.method === 'POST') {
       const bearer = String(req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim();
       const headerToken = String(req.headers['x-arbiter-token'] || bearer || '').trim();
-      const expectedToken = process.env.ARBITER_AUTH_TOKEN || 'vibe-arbiter-token-2026';
+      const expectedToken = process.env.ARBITER_AUTH_TOKEN || 'naruto';
       if (!timingSafeMatch(headerToken, expectedToken)) {
         sendJson(res, 401, { ok: false, error: 'Token Trọng tài không hợp lệ.' });
         return;

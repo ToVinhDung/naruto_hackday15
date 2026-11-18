@@ -32,7 +32,7 @@ test('P1-1: Xóa bỏ mật khẩu mặc định 123456 khỏi index.html và ap
     });
     assert.equal(failRes.status, 401);
 
-    const expectedToken = process.env.ARBITER_AUTH_TOKEN || 'vibe-arbiter-token-2026';
+    const expectedToken = process.env.ARBITER_AUTH_TOKEN || 'naruto';
     const okRes = await fetch(`http://127.0.0.1:${port}/api/auth/arbiter`, {
       method: 'POST',
       headers: { 'x-arbiter-token': expectedToken }
