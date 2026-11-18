@@ -23,7 +23,7 @@ import {
   submitClientTopup,
   approveTopupByArbiter,
   rejectTopupByArbiter,
-  verifyArbiterPassword,
+  escapeHtml,
   evaluateAmlKycTier,
   toggleVaultCircuitBreaker,
   detectScopeCreepRisk
@@ -95,9 +95,8 @@ test('2. 3 Trạng thái Đăng nhập (Client, Freelancer, Arbiter) mỗi vai t
   assert.match(html, /id="arbiter-auth-modal"/);
   assert.match(html, /id="arbiter-password-input"/);
   assert.match(html, /id="topup-notification-items-container"/);
-  assert.equal(verifyArbiterPassword('123456'), true);
-  assert.equal(verifyArbiterPassword('654321'), false);
-  assert.equal(verifyArbiterPassword(''), false);
+  assert.equal(escapeHtml('<script>alert(1)</script>'), '&lt;script&gt;alert(1)&lt;/script&gt;');
+  assert.ok(!html.includes('123456'), 'Không được chứa mật khẩu mặc định 123456 trong index.html');
 });
 
 test('3. Upload File Bằng chứng trong Cửa sổ Popup Giao dịch & Arbiter nhận đầy đủ File', () => {

@@ -29,11 +29,36 @@ export {
 };
 
 /**
- * Kiểm tra mật khẩu đăng nhập Trọng tài (Arbiter)
- * Mật khẩu theo yêu cầu hệ thống là: 123456
+ * Escape HTML để chống XSS khi render dữ liệu người dùng vào innerHTML.
  */
-export function verifyArbiterPassword(inputPassword) {
-  return String(inputPassword || '').trim() === '123456';
+export function escapeHtml(str) {
+  return String(str ?? '').replace(/[&<>"'`]/g, (c) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+    '`': '&#96;'
+  }[c]));
+}
+
+/**
+ * Xác thực Trọng tài (Arbiter) qua Header Token trên Server (POST /api/auth/arbiter).
+ */
+export async function verifyArbiterTokenOnServer(token) {
+  const cleanToken = String(token || '').trim();
+  if (!cleanToken) return { ok: false, error: 'Vui lòng nhập token Trọng tài.' };
+  const res = await fetch('/api/auth/arbiter', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-arbiter-token': cleanToken
+    }
+  });
+  if (!res.ok) {
+    return { ok: false, error: 'Token Trọng tài không chính xác.' };
+  }
+  return { ok: true, token: cleanToken };
 }
 
 /**
@@ -571,14 +596,19 @@ export function evaluateGuardrailCommand(commandString) {
     return { allowed: false, reason: 'Lệnh rỗng.' };
   }
 
-  const blockedPatterns = [
-    { pattern: /rm\s+-rf/i, reason: '[Guardrail G1] Chặn lệnh xóa hủy diệt hệ thống (rm -rf).' },
+  // Chặn triệt để toán tử nối chuỗi / subshell / thực thi ngầm / lệnh nguy hiểm
+  const dangerousOperators = [
+    { pattern: /&&|\|\||;|\||`|\$\(/, reason: '[Guardrail G1] Chặn toán tử nối chuỗi hoặc subshell (&&, ||, ;, |, `, $()).' },
+    { pattern: /\bnode\s+(-e|--eval)\b/i, reason: '[Guardrail G1] Chặn thực thi mã inline qua node -e.' },
+    { pattern: /\b(curl|wget)\b/i, reason: '[Guardrail G1] Chặn tải hoặc gửi dữ liệu mạng ngoài qua curl/wget.' },
+    { pattern: /(^|\s)rm(\s|$)/i, reason: '[Guardrail G1] Chặn lệnh xóa tệp hệ thống (rm).' },
+    { pattern: /\bvercel\s+--prod\b/i, reason: '[Guardrail G3] Chặn deploy thẳng lên production (vercel --prod).' },
     { pattern: /format\s+[a-z]:/i, reason: '[Guardrail G1] Chặn lệnh format ổ đĩa hệ thống.' },
     { pattern: /git\s+push\s+(--force|-f)/i, reason: '[Guardrail G3] Chặn force push gây mất lịch sử nhánh chính.' },
     { pattern: /(cat|type|Get-Content)\s+.*\.env/i, reason: '[Guardrail G2] Vi phạm HITL Secret Rule: Cấm tự động đọc/xuất file .env ra terminal.' }
   ];
 
-  for (const rule of blockedPatterns) {
+  for (const rule of dangerousOperators) {
     if (rule.pattern.test(cmd)) {
       return {
         allowed: false,
@@ -586,6 +616,15 @@ export function evaluateGuardrailCommand(commandString) {
         reason: rule.reason
       };
     }
+  }
+
+  // Ép buộc lệnh cài đặt gói trong sandbox phải có cờ --ignore-scripts
+  if (/^(npm|pnpm|yarn)\s+(install|i|add)\b/i.test(cmd) && !/--ignore-scripts\b/i.test(cmd)) {
+    return {
+      allowed: false,
+      status: 'BLOCKED_BY_GUARDRAIL',
+      reason: '[Guardrail G2] Lệnh cài đặt gói trong Sandbox bắt buộc phải kèm cờ --ignore-scripts.'
+    };
   }
 
   const whitelistPrefixes = ['node', 'npm', 'npm.cmd', 'pnpm', 'git status', 'git checkout -b vibe-feature-', 'vercel', 'powerbatch', '.\\powerbatch.cmd'];
@@ -857,6 +896,9 @@ export function releasePartialMilestone(state, contractId, percent = 50) {
   }
   const contract = state.contracts.find((c) => c.id === contractId);
   if (!contract) return { ok: false, error: 'Không tìm thấy hợp đồng.' };
+  if (countMultiSignatures(contract.signatures) < 2) {
+    return { ok: false, error: 'Chưa đủ chữ ký Multi-Sig 2-of-3 để giải ngân.' };
+  }
   const pct = Math.min(100, Math.max(10, Number(percent) || 50));
   const grossRelease = Math.round(contract.amount * (pct / 100));
   if (grossRelease <= 0 || grossRelease > contract.amount) {
@@ -892,7 +934,7 @@ export function releasePartialMilestone(state, contractId, percent = 50) {
   return { ok: true, contract, feeInfo };
 }
 
-export function triggerTimelockAutoRelease(state, contractId) {
+export function triggerTimelockAutoRelease(state, contractId, options = {}) {
   if (state.vaultPaused) {
     return { ok: false, error: '⚠️ Circuit Breaker đang bật: Tạm dừng giải ngân Smart Vault để kiểm tra an toàn.' };
   }
@@ -900,13 +942,15 @@ export function triggerTimelockAutoRelease(state, contractId) {
   if (!contract || contract.vaultFrozen) {
     return { ok: false, error: 'Hợp đồng không hợp lệ hoặc đang bị đóng băng tranh chấp.' };
   }
+  if (countMultiSignatures(contract.signatures) < 2) {
+    return { ok: false, error: 'Chưa đủ chữ ký Multi-Sig 2-of-3 để Auto-Release.' };
+  }
   const gross = contract.amount;
   const feeInfo = calculateFeeBreakdown(gross, 'Timelock Auto-Release');
   contract.amount = 0;
   contract.releasedSoFar = (contract.releasedSoFar || 0) + gross;
   contract.status = 'RELEASED';
-  contract.timelockRemaining = 'Đã hoàn tất Auto-Release';
-  contract.signatures.arbiter = true;
+  contract.timelockRemaining = options.triggeredBy === 'SERVER_WORKER' ? 'Đã hoàn tất Auto-Release (Server Worker)' : 'Đã hoàn tất Auto-Release';
   contract.failedStepText = null;
   contract.aiRecommendation = null;
 
@@ -1046,10 +1090,41 @@ export function submitDisputeEvidence(state, contractId, actor, content, fileMet
   return { ok: true, entry };
 }
 
-export function resolveDisputeByArbiter(state, contractId, resolution, customBuyerPercent = 35) {
+export function openDisputeWithEvidence(state, contractId, actorContext = {}, reason = '') {
+  const contract = state.contracts.find((c) => c.id === contractId);
+  if (!contract) return { ok: false, error: 'Không tìm thấy hợp đồng.' };
+  if (!Array.isArray(contract.evidences) || contract.evidences.length < 1) {
+    return { ok: false, error: 'Bắt buộc đính kèm ít nhất 1 file bằng chứng trước khi mở tranh chấp.' };
+  }
+  const actorRole = String(actorContext.role || '').toLowerCase();
+  if (actorRole === 'arbiter') {
+    return { ok: false, error: 'Trọng tài không được tự ý mở tranh chấp thay cho các bên.' };
+  }
+  contract.status = 'DISPUTED';
+  contract.vaultFrozen = true;
+  contract.ciVerified = false;
+  contract.disputeOpenedBy = actorContext.actorId || actorRole || 'client';
+  contract.disputeDeadline = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  if (reason) contract.disputeReason = reason;
+  contract.timelockRemaining = '❄️ ĐÓNG BĂNG TIMELOCK (Hạn xử lý 7 ngày)';
+  return { ok: true, contract };
+}
+
+export function resolveDisputeByArbiter(state, contractId, resolution, customBuyerPercent = 35, actorContext = {}) {
   const contract = state.contracts.find((c) => c.id === contractId);
   if (!contract || contract.status !== 'DISPUTED') {
     return { ok: false, error: 'Hợp đồng không tồn tại hoặc không ở trạng thái tranh chấp.' };
+  }
+  if (countMultiSignatures(contract.signatures) < 2) {
+    return { ok: false, error: 'Chưa đủ chữ ký Multi-Sig 2-of-3 để thực thi phán quyết.' };
+  }
+  const actorRole = String(actorContext.role || '').toLowerCase();
+  const actorId = actorContext.actorId ? String(actorContext.actorId) : '';
+  if (actorRole === 'client' || actorRole === 'freelancer') {
+    return { ok: false, error: 'Xung đột lợi ích: Client hoặc Freelancer của hợp đồng không được phép tự xử tranh chấp.' };
+  }
+  if (actorId && (actorId === contract.clientId || actorId === contract.freelancer || actorId === contract.disputeOpenedBy)) {
+    return { ok: false, error: 'Xung đột lợi ích: Người xử tranh chấp không được trùng với người mở tranh chấp hoặc các bên hợp đồng.' };
   }
 
   const grossAmount = contract.amount;
@@ -1085,7 +1160,6 @@ export function resolveDisputeByArbiter(state, contractId, resolution, customBuy
 
   contract.amount = 0;
   contract.vaultFrozen = false;
-  contract.signatures.arbiter = true;
   contract.failedStepText = null;
   contract.aiRecommendation = null;
 
@@ -1204,21 +1278,26 @@ export function initBrowserApp() {
   // Đồng bộ dữ liệu động với Backend API (/api/state)
   async function syncStateWithServer(pushUpdate = false) {
     try {
-      if (pushUpdate) {
-        await callDynamicApi('/api/state', 'POST', state);
-      } else {
-        const remote = await callDynamicApi('/api/state', 'GET');
+      const health = await callDynamicApi('/api/health', 'GET');
+      if (!pushUpdate && health?.status === 'ok') {
+        const remote = await callDynamicApi(`/api/state?role=${encodeURIComponent(currentLoginRole)}`, 'GET');
         if (remote && Array.isArray(remote.contracts)) {
-          state = remote;
+          state = {
+            ...state,
+            ...remote,
+            clientBalance: remote.clientBalance ?? state.clientBalance,
+            freelancerBalance: remote.freelancerBalance ?? state.freelancerBalance,
+            platformFeesCollected: remote.platformFeesCollected ?? state.platformFeesCollected
+          };
         }
       }
       if (apiSyncIndicatorEl) {
-        apiSyncIndicatorEl.textContent = '● Đã kết nối dữ liệu';
-        apiSyncIndicatorEl.className = 'bank-connection is-connected';
+        apiSyncIndicatorEl.textContent = health?.status === 'ok' ? '● Đã kết nối API (Local)' : '● Mất kết nối API';
+        apiSyncIndicatorEl.className = health?.status === 'ok' ? 'bank-connection is-connected' : 'bank-connection';
       }
     } catch {
       if (apiSyncIndicatorEl) {
-        apiSyncIndicatorEl.textContent = '● Đang dùng dữ liệu cục bộ';
+        apiSyncIndicatorEl.textContent = '● Mất kết nối API — Chế độ Offline';
         apiSyncIndicatorEl.className = 'bank-connection';
       }
     }
@@ -1284,8 +1363,8 @@ export function initBrowserApp() {
     if (!hasFailedStep || !c.aiRecommendation) return '';
     return `
       <div class="alert-box alert-error" style="margin-top:0.4rem;">
-        <div><strong>⚠️ Thông báo không đạt:</strong> ${c.failedStepText || 'Phát hiện tiêu chí chưa vượt qua kiểm thử.'}</div>
-        <div style="margin-top:0.2rem;"><strong>💡 Khuyến nghị của AI Agent:</strong> "${c.aiRecommendation}"</div>
+        <div><strong>⚠️ Thông báo không đạt:</strong> ${escapeHtml(c.failedStepText || 'Phát hiện tiêu chí chưa vượt qua kiểm thử.')}</div>
+        <div style="margin-top:0.2rem;"><strong>💡 Khuyến nghị của AI Agent:</strong> "${escapeHtml(c.aiRecommendation)}"</div>
       </div>`;
   }
 
@@ -1311,7 +1390,7 @@ export function initBrowserApp() {
             .map(
               (c) =>
                 `<div style="display:flex;justify-content:space-between;align-items:center;">
-                  <span>• <span class="pill pill-mono">Mã HĐ: ${c.id}</span> ${c.title.slice(0, 26)}...</span>
+                  <span>• <span class="pill pill-mono">Mã HĐ: ${escapeHtml(c.id)}</span> ${escapeHtml(c.title.slice(0, 26))}...</span>
                   <span class="pill pill-mono">${formatVND(c.amount)}</span>
                  </div>`
             )
@@ -1448,13 +1527,10 @@ export function initBrowserApp() {
               <button type="button" class="btn btn-secondary btn-sm" data-popup-action="client-partial" data-id="${c.id}">
                 ◑ Giải ngân Milestone (50%)
               </button>
-              <button type="button" class="btn btn-secondary btn-sm" data-popup-action="client-revision" data-id="${c.id}">
+              <button type="button" class="btn btn-secondary btn-sm" data-popup-action="client-revision" data-id="${escapeHtml(c.id)}">
                 ↺ Yêu cầu Sửa (${c.revisionsUsed}/${c.maxRevisions})
               </button>
-              <button type="button" class="btn btn-secondary btn-sm" data-popup-action="client-timelock" data-id="${c.id}">
-                ⏱ Kích hoạt Auto-Release
-              </button>
-              <button type="button" class="btn btn-rose btn-sm" data-popup-action="open-dispute" data-id="${c.id}">
+              <button type="button" class="btn btn-rose btn-sm" data-popup-action="open-dispute" data-id="${escapeHtml(c.id)}">
                 ❄️ Mở Tranh chấp & Đóng băng Quỹ
               </button>
              </div>
@@ -2047,8 +2123,8 @@ export function initBrowserApp() {
             const actionButtons = isPending
               ? `
               <div style="display:flex;gap:0.45rem;margin-top:0.45rem;flex-wrap:wrap;">
-                <button type="button" class="btn btn-emerald btn-xs" data-approve-topup="${t.id}" style="font-weight:700;">
-                  ✓ Xác nhận Đã nhận tiền (Ghi có ${formatVND(t.netCredited)} vào ví)
+                <button type="button" class="btn btn-emerald btn-xs" data-approve-topup="${escapeHtml(t.id)}" style="font-weight:700;">
+                  🏦 Mô phỏng Webhook Ngân hàng (VA) (+${formatVND(t.netCredited)})
                 </button>
                 <button type="button" class="btn btn-secondary btn-xs" data-reject-topup="${t.id}">
                   ✕ Từ chối Lệnh
@@ -2204,8 +2280,8 @@ export function initBrowserApp() {
             const actionHtml = isArbiter
               ? `
               <div style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap;">
-                <button type="button" class="btn btn-emerald btn-xs" data-approve-topup="${t.id}" style="font-weight:700;">
-                  ✓ Xác nhận Đã nhận tiền (Ghi có ${formatVND(t.netCredited)} vào ví)
+                <button type="button" class="btn btn-emerald btn-xs" data-approve-topup="${escapeHtml(t.id)}" style="font-weight:700;">
+                  🏦 Mô phỏng Webhook Ngân hàng (VA) (+${formatVND(t.netCredited)})
                 </button>
                 <button type="button" class="btn btn-secondary btn-xs" data-reject-topup="${t.id}">
                   ✕ Từ chối Lệnh
@@ -2253,12 +2329,9 @@ export function initBrowserApp() {
         setTimeout(() => arbiterPasswordInput?.focus(), 50);
         return false;
       } else {
-        const pwd = prompt('Vui lòng nhập mật khẩu Trọng tài (Arbiter):');
+        const pwd = prompt('Vui lòng nhập Token xác thực Trọng tài (ARBITER_AUTH_TOKEN):');
         if (pwd === null) return false;
-        if (!verifyArbiterPassword(pwd)) {
-          alert('Mật khẩu Trọng tài không chính xác! Vui lòng nhập đúng 123456.');
-          return false;
-        }
+        return false;
       }
     }
 
@@ -2433,20 +2506,28 @@ export function initBrowserApp() {
     renderAllTransactionUI();
   });
 
-  // Sự kiện Xác thực Mật khẩu Đăng nhập Trọng tài (Arbiter: 123456)
+  // Sự kiện Xác thực Token Trọng tài qua Header (POST /api/auth/arbiter)
   if (arbiterAuthForm) {
-    arbiterAuthForm.addEventListener('submit', (e) => {
+    arbiterAuthForm.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const pwd = arbiterPasswordInput?.value || '';
-      if (verifyArbiterPassword(pwd)) {
-        if (arbiterAuthModal) arbiterAuthModal.hidden = true;
-        switchLoginRole('arbiter', true);
-      } else {
+      const token = arbiterPasswordInput?.value || '';
+      try {
+        const authRes = await verifyArbiterTokenOnServer(token);
+        if (authRes.ok) {
+          if (arbiterAuthModal) arbiterAuthModal.hidden = true;
+          switchLoginRole('arbiter', true);
+        } else {
+          if (arbiterAuthErrorEl) {
+            arbiterAuthErrorEl.hidden = false;
+            arbiterAuthErrorEl.textContent = authRes.error || 'Token Trọng tài không chính xác!';
+          }
+          arbiterPasswordInput?.focus();
+        }
+      } catch {
         if (arbiterAuthErrorEl) {
           arbiterAuthErrorEl.hidden = false;
-          arbiterAuthErrorEl.textContent = 'Mật khẩu Trọng tài không chính xác! Vui lòng nhập đúng 123456.';
+          arbiterAuthErrorEl.textContent = 'Không thể kết nối máy chủ để xác thực Trọng tài.';
         }
-        arbiterPasswordInput?.focus();
       }
     });
   }
@@ -2517,13 +2598,12 @@ export function initBrowserApp() {
         return;
       }
       requestContractRevision(state, cId, 'Yêu cầu bổ sung tiêu chí DoD');
-    } else if (action === 'client-timelock') {
-      triggerTimelockAutoRelease(state, cId);
     } else if (action === 'open-dispute') {
-      contract.status = 'DISPUTED';
-      contract.vaultFrozen = true;
-      contract.ciVerified = false;
-      contract.timelockRemaining = '❄️ ĐÓNG BĂNG TIMELOCK (G4)';
+      const openRes = openDisputeWithEvidence(state, cId, { role: currentLoginRole });
+      if (!openRes.ok) {
+        alert(openRes.error);
+        return;
+      }
       let dossier;
       try {
         dossier = await callDynamicApi('/api/agents/fact-finding', 'POST', contract);
@@ -2538,22 +2618,26 @@ export function initBrowserApp() {
         time: new Date().toLocaleTimeString('vi-VN'),
         role: currentLoginRole.toUpperCase(),
         type: 'Mở Tranh chấp & Đóng băng Vault',
-        detail: `[${cId}] Freeze Vault • Khuyến nghị: ${dossier.proposalStatement}`,
+        detail: `[${cId}] Freeze Vault (Hạn xử lý: 7 ngày) • Khuyến nghị: ${dossier.proposalStatement}`,
         amount: contract.amount,
         auditHash: proof.auditHash
       });
     } else if (action === 'seller-sign') {
       contract.signatures.freelancer = true;
     } else if (action === 'arbiter-ai-bailiff') {
-      resolveDisputeByArbiter(state, cId, 'CUSTOM_SPLIT', 35);
+      const r = resolveDisputeByArbiter(state, cId, 'CUSTOM_SPLIT', 35, { role: currentLoginRole });
+      if (!r.ok) { alert(r.error); return; }
     } else if (action === 'arbiter-custom-split') {
       const slider = document.getElementById('popup-split-slider');
       const pct = slider ? Number(slider.value) : 35;
-      resolveDisputeByArbiter(state, cId, 'CUSTOM_SPLIT', pct);
+      const r = resolveDisputeByArbiter(state, cId, 'CUSTOM_SPLIT', pct, { role: currentLoginRole });
+      if (!r.ok) { alert(r.error); return; }
     } else if (action === 'arbiter-release') {
-      resolveDisputeByArbiter(state, cId, 'RELEASE_FREELANCER');
+      const r = resolveDisputeByArbiter(state, cId, 'RELEASE_FREELANCER', 0, { role: currentLoginRole });
+      if (!r.ok) { alert(r.error); return; }
     } else if (action === 'arbiter-refund') {
-      resolveDisputeByArbiter(state, cId, 'REFUND_CLIENT');
+      const r = resolveDisputeByArbiter(state, cId, 'REFUND_CLIENT', 100, { role: currentLoginRole });
+      if (!r.ok) { alert(r.error); return; }
     }
 
     await syncStateWithServer(true);
@@ -3233,7 +3317,11 @@ export function initBrowserApp() {
     const clientPct = Number(hitlBtn.getAttribute('data-client-percent') ?? 50);
     if (!cId) return;
 
-    resolveDisputeByArbiter(state, cId, 'CUSTOM_SPLIT', clientPct);
+    const res = resolveDisputeByArbiter(state, cId, 'CUSTOM_SPLIT', clientPct, { role: currentLoginRole });
+    if (!res.ok) {
+      alert(res.error);
+      return;
+    }
     await syncStateWithServer(true);
     renderAllTransactionUI();
     const arbiterFeedbackEl = document.getElementById('arbiter-feedback');

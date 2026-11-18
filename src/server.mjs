@@ -3,6 +3,7 @@
  * Phục vụ giao diện White Tone UI tại http://localhost:3000 và các REST API dữ liệu động.
  */
 
+import crypto from 'node:crypto';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,7 +18,7 @@ import {
   runFactFindingBailiffAgentLive,
   fetchAvalancheContext
 } from './agents.js';
-import { createInitialEscrowState } from './app.js';
+import { createInitialEscrowState, triggerTimelockAutoRelease } from './app.js';
 import { createBaseline, loadBaseline } from './engine/baselineManager.mjs';
 import { evaluateSubmission } from './engine/ruleEngine.mjs';
 import { refineVagueCriteria, loadHistoricalBaselines } from './engine/criteriaRefiner.mjs';
@@ -53,7 +54,8 @@ const cliOption = (name) => {
   return index >= 0 ? process.argv[index + 1] : undefined;
 };
 const PORT = Number(process.env.PORT || cliOption('--port') || 3000);
-const HOST = cliOption('--host') || '0.0.0.0';
+const HOST = cliOption('--host') || '127.0.0.1';
+const MAX_REQUEST_BODY_BYTES = 1024 * 1024; // 1MB
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -71,13 +73,29 @@ const MIME_TYPES = {
 let serverEscrowState = createInitialEscrowState();
 const latestEvaluationReports = new Map();
 
-function readJsonBody(req) {
+function readJsonBody(req, maxBytes = MAX_REQUEST_BODY_BYTES) {
   return new Promise((resolve, reject) => {
-    let body = '';
+    const chunks = [];
+    let totalBytes = 0;
+    let settled = false;
+
     req.on('data', (chunk) => {
-      body += chunk;
+      if (settled) return;
+      totalBytes += chunk.length;
+      if (totalBytes > maxBytes) {
+        settled = true;
+        const err = new Error('Payload Too Large: vượt quá giới hạn tối đa 1MB.');
+        err.statusCode = 413;
+        req.destroy();
+        reject(err);
+        return;
+      }
+      chunks.push(chunk);
     });
     req.on('end', () => {
+      if (settled) return;
+      settled = true;
+      const body = Buffer.concat(chunks).toString('utf8');
       if (!body) {
         resolve({});
         return;
@@ -88,8 +106,55 @@ function readJsonBody(req) {
         reject(err);
       }
     });
-    req.on('error', reject);
+    req.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    });
   });
+}
+
+function timingSafeMatch(input, expected) {
+  const a = Buffer.from(String(input || ''), 'utf8');
+  const b = Buffer.from(String(expected || ''), 'utf8');
+  if (a.length === 0 || a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+function filterStateByRole(state, role) {
+  const normalizedRole = String(role || 'client').toLowerCase();
+  const cloned = JSON.parse(JSON.stringify(state));
+  if (normalizedRole === 'client') {
+    delete cloned.freelancerBalance;
+    delete cloned.platformFeesCollected;
+  } else if (normalizedRole === 'freelancer') {
+    delete cloned.clientBalance;
+    delete cloned.platformFeesCollected;
+  } else if (normalizedRole === 'arbiter') {
+    delete cloned.clientBalance;
+    delete cloned.freelancerBalance;
+  }
+  return cloned;
+}
+
+/**
+ * Worker tự động giải ngân khi hợp đồng ở trạng thái SUBMITTED_PASSED và quá thời gian kiểm tra (inspectionMs).
+ */
+export function processAutoReleaseContracts(state, nowMs = Date.now()) {
+  if (!state || !Array.isArray(state.contracts) || state.vaultPaused) return [];
+  const releasedIds = [];
+  for (const contract of state.contracts) {
+    if (contract.status !== 'SUBMITTED_PASSED' || contract.vaultFrozen) continue;
+    const submittedAt = Number(contract.submittedAt);
+    const inspectionMs = Number(contract.inspectionMs ?? (Number(contract.inspectionDays) || 3) * 86400000);
+    if (!Number.isFinite(submittedAt) || nowMs <= submittedAt + inspectionMs) continue;
+
+    const res = triggerTimelockAutoRelease(state, contract.id, { nowMs, triggeredBy: 'SERVER_WORKER' });
+    if (res.ok) {
+      releasedIds.push(contract.id);
+    }
+  }
+  return releasedIds;
 }
 
 function sendJson(res, statusCode, data) {
@@ -119,24 +184,29 @@ export function createPreviewServer() {
       return;
     }
 
-    // API lấy & đồng bộ dữ liệu động của toàn bộ phiên giao dịch Escrow
+    // API xác thực Trọng tài qua Header Token (x-arbiter-token hoặc Authorization: Bearer ...)
+    if (urlPath === '/api/auth/arbiter' && req.method === 'POST') {
+      const bearer = String(req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim();
+      const headerToken = String(req.headers['x-arbiter-token'] || bearer || '').trim();
+      const expectedToken = process.env.ARBITER_AUTH_TOKEN || 'vibe-arbiter-token-2026';
+      if (!timingSafeMatch(headerToken, expectedToken)) {
+        sendJson(res, 401, { ok: false, error: 'Token Trọng tài không hợp lệ.' });
+        return;
+      }
+      sendJson(res, 200, { ok: true, role: 'arbiter' });
+      return;
+    }
+
+    // API lấy dữ liệu Escrow đã lọc ẩn số dư vai trò khác; chặn POST /api/state ghi đè toàn bộ state
     if (urlPath === '/api/state') {
       if (req.method === 'GET') {
-        sendJson(res, 200, serverEscrowState);
+        const reqUrl = new URL(req.url || '/', 'http://127.0.0.1');
+        const role = reqUrl.searchParams.get('role') || req.headers['x-user-role'] || 'client';
+        sendJson(res, 200, filterStateByRole(serverEscrowState, role));
         return;
       }
-      if (req.method === 'POST') {
-        try {
-          const updated = await readJsonBody(req);
-          if (updated && typeof updated === 'object' && Array.isArray(updated.contracts)) {
-            serverEscrowState = updated;
-          }
-          sendJson(res, 200, { ok: true, state: serverEscrowState });
-        } catch (err) {
-          sendJson(res, 400, { error: err.message });
-        }
-        return;
-      }
+      sendJson(res, 405, { ok: false, error: 'Method Not Allowed: POST /api/state đã bị vô hiệu hóa để bảo vệ toàn vẹn state.' });
+      return;
     }
 
     // API danh sách 4 Tầng AI Agents (hiển thị khi bấm vào nút AI Agents trên thanh bar)
@@ -488,6 +558,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
     }
   });
   server.listen(PORT, HOST, () => {
-    console.log(`[Antigravity Preview Server] Listening at http://localhost:${PORT} and http://127.0.0.1:${PORT}`);
+    setInterval(() => {
+      processAutoReleaseContracts(serverEscrowState, Date.now());
+    }, 30000).unref();
+    console.log(`[Antigravity Preview Server] Listening at http://${HOST}:${PORT}`);
   });
 }

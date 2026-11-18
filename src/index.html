@@ -32,7 +32,7 @@
           <button type="button" class="btn btn-secondary btn-xs" id="btn-arbiter-circuit-breaker" hidden>Tạm dừng giải ngân</button>
           <span class="pill" id="vault-security-pill"></span>
         </details>
-        <span class="bank-connection" id="api-sync-indicator">Đang kết nối dữ liệu…</span>
+        <span class="bank-connection" id="api-sync-indicator">Đang kiểm tra kết nối API…</span>
       </div>
     </aside>
 
@@ -630,7 +630,7 @@ Giao diện đẹp</textarea>
   </div>
 
   <!-- ========================================================================
-       POPUP MODAL: ĐĂNG NHẬP ARBITER CẦN MẬT KHẨU (123456)
+       POPUP MODAL: XÁC THỰC TRỌNG TÀI (ARBITER TOKEN)
        ======================================================================== -->
   <div class="modal-backdrop" id="arbiter-auth-modal" hidden>
     <div class="modal-card" style="max-width:390px;background:#FFFFFF;border-radius:var(--radius-md);box-shadow:var(--shadow-lg);border:1px solid var(--border-color);" role="dialog" aria-modal="true" aria-labelledby="arbiter-modal-title">
@@ -640,7 +640,7 @@ Giao diện đẹp</textarea>
             <span>🔒</span> Xác thực Trọng tài (Arbiter)
           </h3>
           <div style="font-size:0.75rem;color:var(--text-secondary);margin-top:0.2rem;">
-            Khu vực kiểm soát quỹ &amp; phê duyệt tiền nạp VietQR
+            Xác thực qua Header Token trên Server (`ARBITER_AUTH_TOKEN`)
           </div>
         </div>
         <button type="button" class="btn btn-secondary btn-xs" id="btn-close-arbiter-auth" aria-label="Đóng">✕</button>
@@ -649,12 +649,12 @@ Giao diện đẹp</textarea>
       <div style="padding:1.15rem 1.2rem;">
         <form id="arbiter-auth-form" novalidate>
           <div class="form-group" style="margin-bottom:0.85rem;">
-            <label class="form-label" for="arbiter-password-input">Mật khẩu Trọng tài (Mặc định: <strong>123456</strong>)</label>
+            <label class="form-label" for="arbiter-password-input">Token xác thực Trọng tài</label>
             <input
               type="password"
               id="arbiter-password-input"
               class="form-input"
-              placeholder="Nhập 123456"
+              placeholder="Nhập ARBITER_AUTH_TOKEN"
               autocomplete="current-password"
               required
             />

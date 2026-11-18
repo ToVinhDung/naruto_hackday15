@@ -69,6 +69,9 @@ export function validateContractTitle(title) {
     return { valid: false, error: 'Vui lòng nhập tên hợp đồng.' };
   }
   const trimmed = title.trim();
+  if (/[<>]/.test(trimmed)) {
+    return { valid: false, error: 'Tên hợp đồng không được chứa thẻ HTML (<, >).' };
+  }
   if (trimmed.length < 6) {
     return { valid: false, error: 'Tên hợp đồng quá ngắn (tối thiểu 6 ký tự).' };
   }
