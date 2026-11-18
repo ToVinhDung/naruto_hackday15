@@ -477,12 +477,12 @@ export function submitClientTopup(state, { accountNumber, amount, method }) {
     netCredited,
     kycTier: kycInfo.tier,
     kycLabel: kycInfo.label,
-    method: method || 'VietQR Pro 24/7 (MB - TO VINH DUNG)',
+    method: method || 'VietQR Pro 24/7 (MB - NGUYEN VAN A)',
     memo,
     status: 'PENDING_APPROVAL',
     receiverBank: 'MB (Ngân hàng TMCP Quân Đội)',
-    receiverName: 'TO VINH DUNG',
-    receiverAccount: '0898143615',
+    receiverName: 'NGUYEN VAN A',
+    receiverAccount: '0000000000',
     qrImage: './vietqr.jpg'
   };
 
@@ -497,7 +497,7 @@ export function submitClientTopup(state, { accountNumber, amount, method }) {
     time: entry.time,
     role: 'CLIENT',
     type: 'Lệnh Nạp Quỹ VietQR (Chờ Arbiter Duyệt)',
-    detail: `Tạo lệnh nạp [${topupId}] ${validation.formatted} vào QR MB 0898143615 (Nội dung: ${memo}). Chờ Arbiter đối soát.`,
+    detail: `Tạo lệnh nạp [${topupId}] ${validation.formatted} vào QR MB 0000000000 (Nội dung: ${memo}). Chờ Arbiter đối soát.`,
     amount: validation.amount,
     auditHash: proof.auditHash
   });
@@ -528,7 +528,7 @@ export function approveTopupByArbiter(state, topupId) {
     time: entry.approvedTime,
     role: 'ARBITER',
     type: 'Xác nhận Nạp Quỹ VietQR Thành công',
-    detail: `Arbiter xác nhận đã nhận ${formatVND(entry.amount)} từ STK [${entry.clientAccount}] qua VietQR MB 0898143615. Đã ghi có ${formatVND(entry.netCredited)} vào Segregated Vault cho Client.`,
+    detail: `Arbiter xác nhận đã nhận ${formatVND(entry.amount)} từ STK [${entry.clientAccount}] qua VietQR MB 0000000000. Đã ghi có ${formatVND(entry.netCredited)} vào Segregated Vault cho Client.`,
     amount: entry.netCredited,
     auditHash: proof.auditHash
   });
@@ -621,12 +621,12 @@ export function createInitialEscrowState() {
         formatted: '1.000.000 ₫',
         gatewayFee: 0,
         netCredited: 1000000,
-        method: 'VietQR Pro 24/7 (MB - TO VINH DUNG)',
+        method: 'VietQR Pro 24/7 (MB - NGUYEN VAN A)',
         memo: 'NAP ESCROW TOPUP-101',
         status: 'PENDING_APPROVAL',
         receiverBank: 'MB (Ngân hàng TMCP Quân Đội)',
-        receiverName: 'TO VINH DUNG',
-        receiverAccount: '0898143615',
+        receiverName: 'NGUYEN VAN A',
+        receiverAccount: '0000000000',
         qrImage: './vietqr.jpg'
       }
     ],
@@ -2001,7 +2001,7 @@ export function initBrowserApp() {
               ? `<span style="color:var(--accent-emerald);">Đã đối soát biến động số dư lúc ${t.approvedTime}</span>`
               : isRejected
               ? `<span style="color:var(--accent-rose);">${t.rejectReason || 'Không hợp lệ'}</span>`
-              : `<span style="color:var(--accent-amber);">Đã quét QR MB 0898143615, chờ Arbiter xác nhận</span>`;
+              : `<span style="color:var(--accent-amber);">Đã quét QR MB 0000000000, chờ Arbiter xác nhận</span>`;
 
             return `
             <div style="display:flex;justify-content:space-between;align-items:center;padding:0.45rem 0.2rem;border-bottom:1px solid var(--border-color);font-size:0.76rem;gap:0.5rem;flex-wrap:wrap;">
@@ -2067,7 +2067,7 @@ export function initBrowserApp() {
               </div>
               <div class="contract-subbox" style="font-size:0.74rem;line-height:1.55;">
                 <div>• Tài khoản Client gửi: <strong>${t.clientAccount}</strong></div>
-                <div>• Tài khoản nhận hệ thống: <strong>MB Quân Đội (0898143615 - TO VINH DUNG)</strong></div>
+                <div>• Tài khoản nhận hệ thống: <strong>MB Quân Đội (0000000000 - NGUYEN VAN A)</strong></div>
                 <div>• Nội dung chuyển khoản: <strong style="color:var(--accent-purple);font-family:var(--font-mono);">${t.memo}</strong></div>
                 <div>• Thời gian gửi: <span>${t.time}</span></div>
               </div>
@@ -2181,7 +2181,7 @@ export function initBrowserApp() {
       if (currentLoginRole === 'arbiter') {
         topupNotificationRoleHintEl.innerHTML = `
           ⚖️ <strong style="color:var(--text-primary);">QUYỀN TRỌNG TÀI (ARBITER):</strong>
-          Bạn có thẩm quyền đối soát giao dịch VietQR MB Bank (<strong>0898143615 - TO VINH DUNG</strong>).
+          Bạn có thẩm quyền đối soát giao dịch VietQR MB Bank (<strong>0000000000 - NGUYEN VAN A</strong>).
           Hãy nhấn nút <strong>✓ Xác nhận Đã nhận tiền</strong> để ghi có số dư vào Segregated Vault cho Client.`;
       } else {
         topupNotificationRoleHintEl.innerHTML = `
@@ -2225,7 +2225,7 @@ export function initBrowserApp() {
                 <div style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap;">
                   <span class="pill pill-mono" style="font-weight:700;">${t.id}</span>
                   <strong style="color:var(--accent-blue);font-size:0.95rem;">+${formatVND(t.amount)}</strong>
-                  <span class="pill pill-blue">MB: 0898143615 • TO VINH DUNG</span>
+                  <span class="pill pill-blue">MB: 0000000000 • NGUYEN VAN A</span>
                   <span class="pill pill-mono" style="background:#F1F5F9;">Memo: ${t.memo}</span>
                   ${kycPill}
                 </div>
@@ -2375,7 +2375,7 @@ export function initBrowserApp() {
     if (rejectTopupBtn) {
       e.stopPropagation();
       const topupId = rejectTopupBtn.getAttribute('data-reject-topup');
-      const reason = prompt('Nhập lý do từ chối lệnh nạp tiền:', 'Không nhận được tiền biến động số dư VietQR MB 0898143615');
+      const reason = prompt('Nhập lý do từ chối lệnh nạp tiền:', 'Không nhận được tiền biến động số dư VietQR MB 0000000000');
       if (reason === null) return;
       const res = rejectTopupByArbiter(state, topupId, reason || 'Không nhận được tiền');
       if (res.ok) {
@@ -2722,7 +2722,7 @@ export function initBrowserApp() {
         topupFeedbackEl.className = 'alert-box alert-warning';
         topupFeedbackEl.innerHTML = `
           <div><strong>⏳ Đã gửi Lệnh Nạp Tiền [${result.entry.id}] (${result.entry.formatted})!</strong></div>
-          <div style="margin-top:0.3rem;">Vui lòng chuyển khoản đúng số tiền tới mã VietQR <strong>MB: 0898143615 — TO VINH DUNG</strong> (Nội dung: <code>${result.entry.memo}</code>).</div>
+          <div style="margin-top:0.3rem;">Vui lòng chuyển khoản đúng số tiền tới mã VietQR <strong>MB: 0000000000 — NGUYEN VAN A</strong> (Nội dung: <code>${result.entry.memo}</code>).</div>
           <div style="margin-top:0.3rem;font-size:0.75rem;color:var(--text-secondary);">Hệ thống đã gửi thông báo đối soát tới <strong>Trọng tài (Arbiter)</strong>. Tiền sẽ được nạp vào Segregated Vault ngay sau khi Arbiter xác nhận biến động số dư thành công.</div>
         `;
       }

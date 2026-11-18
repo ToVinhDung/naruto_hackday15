@@ -282,7 +282,7 @@ test('8. Agent kiểm tra định dạng link GitHub chuẩn & Tên hợp đồn
   }
 });
 
-test('9. Hệ thống nạp tiền VietQR (MB - TO VINH DUNG 0898143615) & Quy trình Arbiter phê duyệt mới vào hệ thống', () => {
+test('9. Hệ thống nạp tiền VietQR (MB - NGUYEN VAN A 0000000000) & Quy trình Arbiter phê duyệt mới vào hệ thống', () => {
   const state = createInitialEscrowState();
   const initialBalance = state.clientBalance;
 
@@ -290,14 +290,14 @@ test('9. Hệ thống nạp tiền VietQR (MB - TO VINH DUNG 0898143615) & Quy t
   const topupRes = submitClientTopup(state, {
     accountNumber: '19036888999012 - Techcombank (Client Corp)',
     amount: 2000000,
-    method: 'VietQR Pro 24/7 (MB - TO VINH DUNG)'
+    method: 'VietQR Pro 24/7 (MB - NGUYEN VAN A)'
   });
 
   assert.equal(topupRes.ok, true);
   assert.equal(topupRes.entry.amount, 2000000);
   assert.equal(topupRes.entry.status, 'PENDING_APPROVAL');
-  assert.equal(topupRes.entry.receiverAccount, '0898143615');
-  assert.equal(topupRes.entry.receiverName, 'TO VINH DUNG');
+  assert.equal(topupRes.entry.receiverAccount, '0000000000');
+  assert.equal(topupRes.entry.receiverName, 'NGUYEN VAN A');
   assert.equal(topupRes.entry.receiverBank, 'MB (Ngân hàng TMCP Quân Đội)');
 
   // Tiền CHƯA được nạp vào ví ngay lập tức
@@ -315,7 +315,7 @@ test('9. Hệ thống nạp tiền VietQR (MB - TO VINH DUNG 0898143615) & Quy t
   const latestTx = state.ledger[0];
   assert.equal(latestTx.role, 'ARBITER');
   assert.match(latestTx.type, /Xác nhận Nạp Quỹ/);
-  assert.match(latestTx.detail, /0898143615/);
+  assert.match(latestTx.detail, /0000000000/);
 
   // 4. Kiểm tra từ chối lệnh nạp tiền
   const secondTopup = submitClientTopup(state, {
