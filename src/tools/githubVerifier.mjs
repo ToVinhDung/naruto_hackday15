@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { buildSanitizedChildEnv, sanitizeSandboxLog } from '../engine/resilienceGuard.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -139,14 +140,19 @@ export async function runSandboxTests({
   repoUrl,
   commitSha = 'HEAD',
   testCommand = 'node --test',
-  timeoutMs = 25000
+  cloneTimeoutMs = 30000,
+  testTimeoutMs = 45000,
+  timeoutMs
 } = {}) {
+  const effectiveCloneTimeout = Math.min(30000, Number(timeoutMs || cloneTimeoutMs) || 30000);
+  const effectiveTestTimeout = Math.min(45000, Number(timeoutMs || testTimeoutMs) || 45000);
   const parsed = parseGitHubUrl(repoUrl);
   const normalizedCmdKey = String(testCommand || 'node --test').trim().toLowerCase();
   const cmdSpec = ALLOWED_TEST_COMMANDS.get(normalizedCmdKey) || ALLOWED_TEST_COMMANDS.get('node --test');
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'escrow-gh-sandbox-'));
   const startMs = Date.now();
+  const sanitizedEnv = buildSanitizedChildEnv(process.env);
 
   try {
     const cloneTarget = parsed.valid ? parsed.cloneUrl : String(repoUrl || '').trim();
@@ -155,18 +161,19 @@ export async function runSandboxTests({
     }
 
     await execFileAsync('git', ['clone', '--depth', '20', cloneTarget, tmpDir], {
-      timeout: timeoutMs
+      timeout: effectiveCloneTimeout,
+      env: sanitizedEnv
     });
 
     const cleanSha = String(commitSha || '').replace(/^commit#/i, '').trim();
     if (cleanSha && cleanSha.toUpperCase() !== 'HEAD' && /^[a-f0-9]{7,40}$/i.test(cleanSha)) {
       try {
-        await execFileAsync('git', ['checkout', cleanSha], { cwd: tmpDir, timeout: 8000 });
+        await execFileAsync('git', ['checkout', cleanSha], { cwd: tmpDir, timeout: 8000, env: sanitizedEnv });
       } catch {
         // Nếu shallow clone chưa có commit đó, thử fetch trực tiếp commit
         try {
-          await execFileAsync('git', ['fetch', '--depth', '1', 'origin', cleanSha], { cwd: tmpDir, timeout: 10000 });
-          await execFileAsync('git', ['checkout', 'FETCH_HEAD'], { cwd: tmpDir, timeout: 5000 });
+          await execFileAsync('git', ['fetch', '--depth', '1', 'origin', cleanSha], { cwd: tmpDir, timeout: 10000, env: sanitizedEnv });
+          await execFileAsync('git', ['checkout', 'FETCH_HEAD'], { cwd: tmpDir, timeout: 5000, env: sanitizedEnv });
         } catch {
           // Giữ nguyên HEAD nếu commitSha là mã mô phỏng
         }
@@ -182,8 +189,9 @@ export async function runSandboxTests({
     try {
       const res = await execFileAsync(cmdSpec.cmd, cmdSpec.args, {
         cwd: tmpDir,
-        timeout: timeoutMs,
-        env: { ...process.env, CI: 'true' }
+        timeout: effectiveTestTimeout,
+        killSignal: 'SIGKILL',
+        env: sanitizedEnv
       });
       stdout = res.stdout || '';
       stderr = res.stderr || '';
@@ -194,7 +202,7 @@ export async function runSandboxTests({
     }
 
     const executionTimeMs = Math.max(1, Date.now() - testStart);
-    const combinedLog = [stdout, stderr].filter(Boolean).join('\n').trim();
+    const combinedLog = sanitizeSandboxLog([stdout, stderr].filter(Boolean).join('\n').trim(), tmpDir);
     const stats = parseNodeTestRate(combinedLog, exitCode);
 
     return {
@@ -202,6 +210,7 @@ export async function runSandboxTests({
       deliveredFiles,
       testCommand: normalizedCmdKey,
       exitCode,
+      milestoneStatus: exitCode === 0 ? 'PASSED' : 'REQUEST_REVISION',
       executionTimeMs,
       testLog: combinedLog.slice(0, 4000) || `Executed ${normalizedCmdKey} with exit code ${exitCode}`,
       metrics: {
@@ -216,13 +225,18 @@ export async function runSandboxTests({
     };
   } catch (cloneErr) {
     const executionTimeMs = Math.max(1, Date.now() - startMs);
+    const cleanErrLog = sanitizeSandboxLog(
+      `Không thể clone hoặc chạy sandbox cho "${repoUrl}": ${cloneErr.message}`,
+      tmpDir
+    );
     return {
       cloned: false,
       deliveredFiles: [],
       testCommand: normalizedCmdKey,
       exitCode: 1,
+      milestoneStatus: 'REQUEST_REVISION',
       executionTimeMs,
-      testLog: `Không thể clone hoặc chạy sandbox cho "${repoUrl}": ${cloneErr.message}`,
+      testLog: cleanErrLog,
       metrics: {
         unit_test_pass_rate: 0,
         unitTestsFailed: 1,

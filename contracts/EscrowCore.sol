@@ -166,3 +166,4 @@ contract EscrowCore {
         return proofs[milestoneId];
     }
 }
+

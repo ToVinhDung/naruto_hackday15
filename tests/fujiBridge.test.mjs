@@ -56,3 +56,4 @@ test('3. fujiBridge.mjs chuẩn hóa bytes32, Snowtrace URL và xử lý an toà
   assert.equal(res.onChain, false);
   assert.equal(res.chainId, 43113);
 });
+

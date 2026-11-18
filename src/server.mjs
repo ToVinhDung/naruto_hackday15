@@ -22,6 +22,7 @@ import { createInitialEscrowState, triggerTimelockAutoRelease } from './app.js';
 import { createBaseline, loadBaseline } from './engine/baselineManager.mjs';
 import { evaluateSubmission } from './engine/ruleEngine.mjs';
 import { refineVagueCriteria, loadHistoricalBaselines } from './engine/criteriaRefiner.mjs';
+import { executeWithFallback } from './engine/resilienceGuard.mjs';
 import { calculateFrozenFundSplit } from './engine/settlementCalculator.mjs';
 import { parseGitHubUrl, fetchGitHubCommitDetails, runSandboxTests } from './tools/githubVerifier.mjs';
 import { AGENT_VERIFICATION_TOOLS, executeAgentTool } from './tools/agentTools.mjs';
@@ -271,16 +272,38 @@ export function createPreviewServer() {
       return;
     }
 
-    // API Chuẩn hóa Tiêu chí Nghiệm thu mơ hồ (RAG Historical Baselines + Rule + LLM)
+    // API Chuẩn hóa Tiêu chí Nghiệm thu mơ hồ (RAG Historical Baselines + Rule + LLM Fallback)
     if (urlPath === '/api/agreements/refine-criteria' && req.method === 'POST') {
       try {
         const { contractTitle, rawCriteria } = await readJsonBody(req);
         const baselinesDir = path.join(ROOT_DIR, 'data', 'baselines');
         const historicalBaselines = loadHistoricalBaselines(baselinesDir);
-        const refined = await refineVagueCriteria(contractTitle, rawCriteria, historicalBaselines);
+        const refined = await executeWithFallback(
+          () => refineVagueCriteria(contractTitle, rawCriteria, historicalBaselines, { useLlm: true }),
+          () => refineVagueCriteria(contractTitle, rawCriteria, historicalBaselines, { useLlm: false }),
+          8000
+        );
         sendJson(res, 200, { ok: true, ...refined });
       } catch (err) {
-        sendJson(res, 400, { error: err.message });
+        sendJson(res, err.statusCode || 400, { error: err.message });
+      }
+      return;
+    }
+
+    // API Gợi ý Tiêu chí Nghiệm thu từ Tên hợp đồng (RAG + LLM Fallback)
+    if (urlPath === '/api/agreements/suggest-criteria' && req.method === 'POST') {
+      try {
+        const { contractTitle, rawCriteria } = await readJsonBody(req);
+        const baselinesDir = path.join(ROOT_DIR, 'data', 'baselines');
+        const historicalBaselines = loadHistoricalBaselines(baselinesDir);
+        const suggested = await executeWithFallback(
+          () => refineVagueCriteria(contractTitle, rawCriteria || [], historicalBaselines, { useLlm: true }),
+          () => refineVagueCriteria(contractTitle, rawCriteria || [], historicalBaselines, { useLlm: false }),
+          8000
+        );
+        sendJson(res, 200, { ok: true, ...suggested });
+      } catch (err) {
+        sendJson(res, err.statusCode || 400, { error: err.message });
       }
       return;
     }
