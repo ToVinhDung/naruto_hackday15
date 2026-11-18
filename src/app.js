@@ -1713,6 +1713,146 @@ export function initBrowserApp() {
         .join('');
     }
 
+  function buildLocalDisputeSettlement(contract, evaluationReport = null) {
+    const frozenAmount = Math.max(0, Number(contract?.amount || 0) - Number(contract?.releasedSoFar || 0));
+    const ev = evaluationReport || {
+      blocked: false,
+      deterministicScore: contract?.ciVerified ? 100 : 65,
+      deterministicResults: [
+        {
+          id: 'OBJ-01',
+          metric: 'unit_test_pass_rate',
+          passed: Boolean(contract?.ciVerified),
+          weight: 50,
+          actualValue: contract?.ciVerified ? 100 : 60,
+          operator: '==',
+          expectedValue: 100
+        },
+        {
+          id: 'OBJ-02',
+          metric: 'api_latency_ms',
+          passed: true,
+          weight: 30,
+          actualValue: 165,
+          operator: '<=',
+          expectedValue: 250
+        }
+      ],
+      pendingHitlCriteria: [{ id: 'SUB-01', description: 'Đánh giá cảm quan & giao diện (HITL)', weight: 20 }]
+    };
+
+    const totalDetWeight = (ev.deterministicResults || []).reduce((s, r) => s + (Number(r.weight) || 40), 0);
+    const totalSubWeight = (ev.pendingHitlCriteria || []).reduce((s, r) => s + (Number(r.weight) || 20), 0);
+    const totalW = totalDetWeight + totalSubWeight || 100;
+
+    let earned = 0;
+    const breakdown = [];
+    for (const r of ev.deterministicResults || []) {
+      const w = Math.round((((Number(r.weight) || 40) / totalW) * 100) * 100) / 100;
+      const e = ev.blocked ? 0 : r.passed ? w : 0;
+      earned += e;
+      breakdown.push({
+        id: r.id,
+        metric: r.metric,
+        weightPercent: w,
+        status: ev.blocked ? 'BLOCKED' : r.passed ? 'PASSED' : 'FAILED',
+        earnedPercent: e,
+        reason: r.passed
+          ? `Đạt chuẩn (${r.actualValue} ${r.operator} ${r.expectedValue})`
+          : `Không đạt (${r.actualValue} vs ${r.operator} ${r.expectedValue})`
+      });
+    }
+    for (const h of ev.pendingHitlCriteria || []) {
+      const w = Math.round((((Number(h.weight) || 20) / totalW) * 100) * 100) / 100;
+      const e = ev.blocked ? 0 : Math.round(w * 0.5 * 100) / 100;
+      earned += e;
+      breakdown.push({
+        id: h.id,
+        metric: 'SUBJECTIVE (HITL)',
+        weightPercent: w,
+        status: ev.blocked ? 'BLOCKED' : 'PENDING_HITL',
+        earnedPercent: e,
+        reason: h.description || 'Hòa giải 50% phần cảm quan (HITL)'
+      });
+    }
+
+    const freelancerPercent = ev.blocked ? 0 : Math.max(0, Math.min(100, Math.round(earned * 100) / 100));
+    const clientPercent = Math.round((100 - freelancerPercent) * 100) / 100;
+    const freelancerAmount = Math.round((frozenAmount * freelancerPercent) / 100);
+    const clientAmount = Math.max(0, frozenAmount - freelancerAmount);
+
+    return {
+      frozenAmount,
+      productScorePercent: freelancerPercent,
+      freelancerPercent,
+      clientPercent,
+      freelancerAmount,
+      clientAmount,
+      breakdown,
+      testReportHash: ev.testReportHash || contract?.proofHash || 'pending-hash'
+    };
+  }
+
+  function renderDisputeSettlementPanelHtml(contract, settlement) {
+    const s = settlement || buildLocalDisputeSettlement(contract);
+    const rows = (s.breakdown || [])
+      .map(
+        (b) => `
+        <tr style="border-top:1px solid var(--border-color);">
+          <td style="padding:0.35rem 0.45rem;font-family:var(--font-mono);font-size:0.74rem;">${b.id}${b.metric ? ` (${b.metric})` : ''}${b.isCritical ? ' <span class="pill pill-rose" style="font-size:0.64rem;">critical</span>' : ''}</td>
+          <td style="padding:0.35rem 0.45rem;font-size:0.74rem;">${b.weightPercent}%</td>
+          <td style="padding:0.35rem 0.45rem;">
+            <span class="pill ${b.status === 'PASSED' ? 'pill-emerald' : b.status === 'PENDING_HITL' ? 'pill-amber' : 'pill-rose'}" style="font-size:0.68rem;">${b.status}</span>
+          </td>
+          <td style="padding:0.35rem 0.45rem;font-size:0.74rem;">${b.earnedPercent}% — ${b.reason || ''}</td>
+        </tr>`
+      )
+      .join('');
+
+    return `
+      <div class="settlement-rec-box" data-settlement-contract="${contract.id}" style="margin-top:0.65rem;padding:0.75rem;border:1px solid var(--border-color);border-radius:var(--radius-sm);background:#F8FAFC;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.45rem;">
+          <strong style="font-size:0.84rem;">⚖️ Khuyến nghị Phân bổ Quỹ Đóng Băng từ Agent</strong>
+          <span class="pill pill-blue" style="font-size:0.72rem;">Điểm sản phẩm đạt chuẩn: ${s.productScorePercent}%</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-bottom:0.55rem;">
+          <div style="background:#FFFFFF;border:1px solid var(--border-color);border-radius:6px;padding:0.5rem 0.65rem;">
+            <div style="font-size:0.72rem;color:var(--text-secondary);">Freelancer nhận (${s.freelancerPercent}%)</div>
+            <strong style="font-size:0.92rem;color:var(--accent-emerald);">${formatVND(s.freelancerAmount)}</strong>
+          </div>
+          <div style="background:#FFFFFF;border:1px solid var(--border-color);border-radius:6px;padding:0.5rem 0.65rem;">
+            <div style="font-size:0.72rem;color:var(--text-secondary);">Hoàn trả Client (${s.clientPercent}%)</div>
+            <strong style="font-size:0.92rem;color:var(--accent-blue);">${formatVND(s.clientAmount)}</strong>
+          </div>
+        </div>
+        <div style="overflow-x:auto;margin-bottom:0.55rem;">
+          <table style="width:100%;border-collapse:collapse;background:#FFFFFF;border:1px solid var(--border-color);border-radius:6px;">
+            <thead>
+              <tr style="background:var(--bg-secondary);font-size:0.72rem;text-align:left;">
+                <th style="padding:0.35rem 0.45rem;">Tiêu chí</th>
+                <th style="padding:0.35rem 0.45rem;">Trọng số</th>
+                <th style="padding:0.35rem 0.45rem;">Trạng thái</th>
+                <th style="padding:0.35rem 0.45rem;">Điểm &amp; Giải trình</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+          <span style="font-size:0.71rem;color:var(--text-muted);">Report Hash: <code>${String(s.testReportHash || '').slice(0, 18)}…</code></span>
+          <button
+            type="button"
+            class="btn btn-primary btn-xs"
+            data-sign-hitl-settlement="${contract.id}"
+            data-client-percent="${Math.round(s.clientPercent)}"
+          >
+            ⚖️ Trọng tài Ký Phán quyết (HITL)
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
     if (arbiterDisputesListEl) {
       if (disputedContracts.length === 0) {
         arbiterDisputesListEl.innerHTML = `
@@ -1735,6 +1875,7 @@ export function initBrowserApp() {
                 ${getStatusBadgeHtml(c.status)}
               </div>
               ${renderAgentAlertIfFailed(c)}
+              ${renderDisputeSettlementPanelHtml(c)}
               <div class="contract-subbox">
                 <div style="margin-bottom:0.35rem;"><strong>File bằng chứng đã nhận (${(c.evidences || []).length} files):</strong></div>
                 ${(c.evidences || [])
@@ -2999,6 +3140,27 @@ export function initBrowserApp() {
           ? `<div class="alert-box alert-error" style="margin-bottom:0.5rem;">🚨 <strong>Vi phạm Forbidden Paths:</strong> ${ev.forbiddenViolations.map((v) => `${v.file} (${v.matchedRule})`).join(', ')}</div>`
           : '';
 
+      const hasFailedCriteria =
+        ev.blocked ||
+        ev.recommendation === 'REQUEST_REVISION' ||
+        (ev.deterministicResults || []).some((r) => !r.passed);
+      let disputeRecHtml = '';
+      if (hasFailedCriteria) {
+        try {
+          const settlement = await callDynamicApi(`/api/milestones/${encodeURIComponent(contractId)}/dispute-recommendation`, 'POST', {
+            agreementId: contractId,
+            frozenAmount: contract ? Math.max(0, Number(contract.amount || 0) - Number(contract.releasedSoFar || 0)) : 3000000,
+            evaluationReport: ev
+          });
+          disputeRecHtml = renderDisputeSettlementPanelHtml(
+            contract || { id: contractId, amount: 3000000, releasedSoFar: 0 },
+            settlement
+          );
+        } catch {
+          disputeRecHtml = '';
+        }
+      }
+
       githubVerificationReportBoxEl.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;margin-bottom:0.5rem;flex-wrap:wrap;">
           <strong style="font-size:0.84rem;">🔍 Báo cáo Kiểm tra GitHub &amp; Đối chiếu Baseline [${contractId}]</strong>
@@ -3027,6 +3189,7 @@ export function initBrowserApp() {
           <summary style="font-size:0.76rem;font-weight:700;cursor:pointer;margin-bottom:0.25rem;">🖥 Log chạy kiểm thử từ GitHub Sandbox (${sb.testCommand || 'node --test'})</summary>
           <pre style="background:#0F172A;color:#F8FAFC;padding:0.55rem;border-radius:6px;font-size:0.72rem;max-height:180px;overflow:auto;white-space:pre-wrap;">${String(sb.testLog || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}</pre>
         </details>
+        ${disputeRecHtml}
       `;
     } catch (err) {
       if (githubVerificationReportBoxEl) {
@@ -3059,6 +3222,25 @@ export function initBrowserApp() {
       `;
     } else {
       revBox.hidden = true;
+    }
+  });
+
+  document.addEventListener('click', async (e) => {
+    const hitlBtn = e.target?.closest?.('[data-sign-hitl-settlement]');
+    if (!hitlBtn) return;
+    e.stopPropagation();
+    const cId = hitlBtn.getAttribute('data-sign-hitl-settlement');
+    const clientPct = Number(hitlBtn.getAttribute('data-client-percent') ?? 50);
+    if (!cId) return;
+
+    resolveDisputeByArbiter(state, cId, 'CUSTOM_SPLIT', clientPct);
+    await syncStateWithServer(true);
+    renderAllTransactionUI();
+    const arbiterFeedbackEl = document.getElementById('arbiter-feedback');
+    if (arbiterFeedbackEl) {
+      arbiterFeedbackEl.hidden = false;
+      arbiterFeedbackEl.className = 'alert-box alert-success';
+      arbiterFeedbackEl.textContent = `⚖️ Trọng tài đã ký phán quyết (HITL) cho [${cId}]: Freelancer ${100 - clientPct}% / Hoàn Client ${clientPct}%.`;
     }
   });
 

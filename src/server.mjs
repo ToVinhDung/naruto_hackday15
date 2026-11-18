@@ -21,6 +21,7 @@ import { createInitialEscrowState } from './app.js';
 import { createBaseline, loadBaseline } from './engine/baselineManager.mjs';
 import { evaluateSubmission } from './engine/ruleEngine.mjs';
 import { refineVagueCriteria, loadHistoricalBaselines } from './engine/criteriaRefiner.mjs';
+import { calculateFrozenFundSplit } from './engine/settlementCalculator.mjs';
 import { parseGitHubUrl, fetchGitHubCommitDetails, runSandboxTests } from './tools/githubVerifier.mjs';
 import { AGENT_VERIFICATION_TOOLS, executeAgentTool } from './tools/agentTools.mjs';
 
@@ -68,6 +69,7 @@ const MIME_TYPES = {
 
 // Dữ liệu động trên bộ nhớ Server (In-memory Dynamic Store)
 let serverEscrowState = createInitialEscrowState();
+const latestEvaluationReports = new Map();
 
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
@@ -287,6 +289,12 @@ export function createPreviewServer() {
           metrics: sandbox.metrics
         });
 
+        latestEvaluationReports.set(milestoneId, {
+          baseline,
+          evaluation,
+          updatedAt: new Date().toISOString()
+        });
+
         sendJson(res, 200, {
           ok: true,
           milestoneId,
@@ -315,6 +323,91 @@ export function createPreviewServer() {
         });
       } catch (err) {
         sendJson(res, 400, { error: err.message });
+      }
+      return;
+    }
+
+    // API Khuyến nghị Chia Quỹ Đóng Băng theo điểm chấm nghiệm thu (POST /api/milestones/:milestoneId/dispute-recommendation)
+    const disputeRecMatch = urlPath.match(/^\/api\/milestones\/([^/]+)\/dispute-recommendation$/);
+    if (disputeRecMatch && req.method === 'POST') {
+      try {
+        const milestoneId = decodeURIComponent(disputeRecMatch[1]);
+        const body = await readJsonBody(req);
+        const agreementId = body.agreementId || milestoneId;
+        const baselinesDir = path.join(ROOT_DIR, 'data', 'baselines');
+
+        const cached = latestEvaluationReports.get(milestoneId);
+        const matchedContract = serverEscrowState.contracts.find(
+          (c) => c.id === agreementId || c.id === milestoneId
+        );
+
+        let baseline = body.baseline || cached?.baseline || loadBaseline(agreementId, milestoneId, { baseDir: baselinesDir });
+        if (!baseline) {
+          const refined = await refineVagueCriteria(
+            matchedContract?.title || body.contractTitle || 'Hợp đồng Escrow',
+            matchedContract?.acceptanceCriteria || body.acceptanceCriteria || ['API chạy nhanh', 'Code không lỗi', 'Giao diện đẹp'],
+            loadHistoricalBaselines(baselinesDir),
+            { useLlm: false }
+          );
+          baseline = createBaseline({
+            agreementId: matchedContract?.id || agreementId,
+            milestoneId,
+            persist: false,
+            scopeConstraints: body.scopeConstraints || { forbiddenPaths: ['.env', 'config/secrets'] },
+            acceptanceCriteria: refined.criteria.map((c) =>
+              c.type === 'DETERMINISTIC'
+                ? {
+                    id: c.id,
+                    type: 'DETERMINISTIC',
+                    metric: c.metric,
+                    operator: c.operator,
+                    expectedValue: c.expectedValue,
+                    weight: c.weight
+                  }
+                : {
+                    id: c.id,
+                    type: 'SUBJECTIVE',
+                    description: c.clarifiedDescription || c.originalText,
+                    requiresHitl: true,
+                    weight: c.weight
+                  }
+            )
+          });
+        }
+
+        const evaluationReport =
+          body.evaluationReport ||
+          cached?.evaluation ||
+          evaluateSubmission(baseline, {
+            changedFiles: body.changedFiles || [],
+            metrics: body.metrics || {
+              unit_test_pass_rate: matchedContract?.ciVerified ? 100 : 70,
+              api_latency_ms: matchedContract?.ciVerified ? 160 : 320,
+              security_critical_issues: 0
+            }
+          });
+
+        const frozenAmount =
+          body.frozenAmount !== undefined
+            ? Number(body.frozenAmount)
+            : Math.max(0, Number(matchedContract?.amount || 3000000) - Number(matchedContract?.releasedSoFar || 0));
+
+        const recommendation = calculateFrozenFundSplit({
+          frozenAmount,
+          baseline,
+          evaluationReport,
+          hitlDisputeResolutionRatio: body.hitlDisputeResolutionRatio ?? 0.5
+        });
+
+        sendJson(res, 200, {
+          ok: true,
+          milestoneId,
+          agreementId: baseline.agreementId,
+          baselineHash: baseline.baselineHash,
+          ...recommendation
+        });
+      } catch (err) {
+        sendJson(res, 400, { ok: false, error: err.message });
       }
       return;
     }

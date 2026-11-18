@@ -51,7 +51,8 @@ function normalizeCriterion(criterion, index) {
       metric: String(criterion.metric).trim(),
       operator,
       expectedValue: criterion.expectedValue,
-      weight
+      weight,
+      ...(criterion.is_critical || criterion.isCritical ? { is_critical: true } : {})
     };
   }
 
@@ -62,6 +63,7 @@ function normalizeCriterion(criterion, index) {
       description: String(criterion.description || criterion.clarifiedDescription || '').trim(),
       requiresHitl: true,
       weight,
+      ...(criterion.is_critical || criterion.isCritical ? { is_critical: true } : {}),
       ...(criterion.downgradedByGuard ? { downgradedByGuard: true, warning: criterion.warning } : {}),
       ...(Array.isArray(criterion.referencedFiles) ? { referencedFiles: criterion.referencedFiles } : {}),
       ...(Array.isArray(criterion.removedFileRefs) && criterion.removedFileRefs.length > 0
