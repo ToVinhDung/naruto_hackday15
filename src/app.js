@@ -82,7 +82,9 @@ export async function callDynamicApi(endpoint, method = 'GET', payload = null) {
   }
   const res = await fetch(endpoint, options);
   if (!res.ok) {
-    throw new Error(`API ${endpoint} trả về mã lỗi ${res.status}`);
+    const errData = await res.json().catch(() => ({}));
+    const errMsg = errData.error || errData.message || `API ${endpoint} trả về mã lỗi ${res.status}`;
+    throw new Error(errMsg);
   }
   return await res.json();
 }
@@ -3646,7 +3648,7 @@ export function initBrowserApp() {
       `;
     } catch (err) {
       if (githubVerificationReportBoxEl) {
-        githubVerificationReportBoxEl.innerHTML = `<div style="color:var(--accent-rose);">✖ Lỗi khi kiểm tra GitHub: ${err.message}</div>`;
+        githubVerificationReportBoxEl.innerHTML = `<div style="color:var(--accent-rose);">✖ Lỗi khi kiểm tra GitHub: ${escapeHtml(err.message)}</div>`;
       }
     } finally {
       verifyGithubMilestoneBtn.disabled = false;

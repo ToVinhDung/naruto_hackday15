@@ -2,6 +2,13 @@
  * Middleware bảo mật API & Rate Limiter cho VibeEscrow Server
  */
 
+export function normalizeGitHubVerifyPayload(body = {}) {
+  const repoUrl = String(body.repoUrl || body.deliverableUrl || '').trim();
+  const rawSha = String(body.commitSha || body.commitHash || '').trim();
+  const commitSha = rawSha ? rawSha.replace(/^commit#/i, '').trim() : 'HEAD';
+  return { repoUrl, commitSha };
+}
+
 export function createRateLimiter(options = {}) {
   const buckets = new Map();
   const windowMs = Number(options.windowMs) > 0 ? Number(options.windowMs) : 60000;
@@ -43,3 +50,4 @@ export function createRateLimiter(options = {}) {
     return { allowed: true, limit };
   };
 }
+

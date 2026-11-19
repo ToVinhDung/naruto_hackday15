@@ -431,11 +431,10 @@ test('Luồng chuyển giao DELIVERED_TO_CLIENT: submitDeliverable, POST /api/co
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        repoUrl: 'https://github.com/vercel/next.js',
-        commitHash: '1234567890abcdef1234567890abcdef12345678',
+        deliverableUrl: 'https://github.com/vercel/next.js/tree/canary',
+        commitHash: '9f8c2a1',
         previewUrl: 'https://preview.vibe.dev',
-        deliveryNotes: 'Bàn giao bản v1.0',
-        verificationReport: { allObjectivePassed: true, passedCount: 4, totalCount: 4 }
+        deliveryNotes: 'Bàn giao bản v1.0'
       })
     });
     assert.equal(deliverRes.status, 200);
@@ -444,6 +443,7 @@ test('Luồng chuyển giao DELIVERED_TO_CLIENT: submitDeliverable, POST /api/co
     assert.equal(body.contract.status, 'DELIVERED_TO_CLIENT');
     assert.equal(body.contract.signatures.seller, true);
     assert.equal(body.latestDelivery.previewUrl, 'https://preview.vibe.dev');
+    assert.equal(body.latestDelivery.commitHash, '9f8c2a1');
   } finally {
     server.close();
   }

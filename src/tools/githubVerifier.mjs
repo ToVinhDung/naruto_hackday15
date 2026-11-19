@@ -14,35 +14,39 @@ const ALLOWED_TEST_COMMANDS = new Map([
 
 /**
  * Kiểm tra chống SSRF cho endpoint kiểm tra GitHub:
- * - Bắt buộc giao thức https: và hostname chính xác là github.com
- * - commitSha phải là 'HEAD' hoặc chuỗi hex 40 ký tự
+ * - Bắt buộc giao thức https: và hostname chính xác là github.com (hoặc www.github.com)
+ * - Tự động bóc tách owner/repo (loại bỏ .git, /tree/..., /commit/...)
+ * - commitSha phải là 'HEAD' hoặc chuỗi hex 7-40 ký tự
  */
-export function validateStrictGitHubVerifyInput({ repoUrl, commitSha = 'HEAD' } = {}) {
+export function validateStrictGitHubVerifyInput({ repoUrl, deliverableUrl, commitSha, commitHash } = {}) {
+  const rawUrl = String(repoUrl || deliverableUrl || '').trim();
   let parsedUrl;
   try {
-    parsedUrl = new URL(String(repoUrl || '').trim());
+    parsedUrl = new URL(rawUrl);
   } catch {
-    return { valid: false, error: 'URL GitHub không hợp lệ.' };
+    return { valid: false, ok: false, error: 'URL GitHub không hợp lệ.' };
   }
 
-  if (parsedUrl.protocol !== 'https:' || parsedUrl.hostname.toLowerCase() !== 'github.com') {
-    return { valid: false, error: 'Chặn SSRF: Chỉ chấp nhận URL https://github.com/...' };
+  const host = parsedUrl.hostname.toLowerCase();
+  if (parsedUrl.protocol !== 'https:' || (host !== 'github.com' && host !== 'www.github.com')) {
+    return { valid: false, ok: false, error: 'Chặn SSRF: Chỉ chấp nhận URL https://github.com/...' };
   }
   if (parsedUrl.username || parsedUrl.password || parsedUrl.port) {
-    return { valid: false, error: 'URL GitHub không được chứa thông tin xác thực hoặc cổng tùy chỉnh.' };
+    return { valid: false, ok: false, error: 'URL GitHub không được chứa thông tin xác thực hoặc cổng tùy chỉnh.' };
   }
 
   const parsedRepo = parseGitHubUrl(parsedUrl.toString());
   if (!parsedRepo.valid) {
-    return { valid: false, error: 'URL phải có dạng https://github.com/{owner}/{repo}.' };
+    return { valid: false, ok: false, error: 'URL phải có dạng https://github.com/{owner}/{repo}.' };
   }
 
-  const sha = String(commitSha || 'HEAD').trim();
-  if (sha !== 'HEAD' && !/^[a-f0-9]{40}$/i.test(sha)) {
-    return { valid: false, error: 'commitSha phải là HEAD hoặc chuỗi hex 40 ký tự hợp lệ.' };
+  const rawSha = String(commitSha || commitHash || 'HEAD').trim();
+  const sha = rawSha.replace(/^commit#/i, '').trim() || 'HEAD';
+  if (sha !== 'HEAD' && !/^[a-f0-9]{7,40}$/i.test(sha)) {
+    return { valid: false, ok: false, error: 'commitSha phải là HEAD hoặc chuỗi hex 7–40 ký tự hợp lệ.' };
   }
 
-  return { valid: true, parsedRepo, commitSha: sha };
+  return { valid: true, ok: true, parsedRepo, commitSha: sha };
 }
 
 /**

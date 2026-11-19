@@ -28,7 +28,7 @@ import { calculateFrozenFundSplit } from './engine/settlementCalculator.mjs';
 import { parseGitHubUrl, validateStrictGitHubVerifyInput, fetchGitHubCommitDetails, runSandboxTests } from './tools/githubVerifier.mjs';
 import { AGENT_VERIFICATION_TOOLS, executeAgentTool } from './tools/agentTools.mjs';
 import { anchorProofOnFuji } from './blockchain/fujiBridge.mjs';
-import { createRateLimiter } from './middleware/apiSecurity.mjs';
+import { createRateLimiter, normalizeGitHubVerifyPayload } from './middleware/apiSecurity.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -364,8 +364,7 @@ export function createPreviewServer() {
       try {
         const milestoneId = decodeURIComponent(verifyGhMatch[1]);
         const body = await readJsonBody(req);
-        const repoUrl = body.repoUrl || '';
-        const commitSha = body.commitSha || 'HEAD';
+        const { repoUrl, commitSha } = normalizeGitHubVerifyPayload(body);
         const testCommand = body.testCommand || 'node --test';
         const agreementId = body.agreementId || milestoneId;
 
@@ -521,7 +520,7 @@ export function createPreviewServer() {
           fujiAnchor
         });
       } catch (err) {
-        sendJson(res, err.statusCode || 400, { error: err.message });
+        sendJson(res, err.statusCode || 400, { ok: false, error: err.message });
       }
       return;
     }
@@ -537,8 +536,7 @@ export function createPreviewServer() {
           sendJson(res, 404, { ok: false, error: 'Không tìm thấy hợp đồng.' });
           return;
         }
-        const repoUrl = String(body.repoUrl || '').trim();
-        const commitHash = String(body.commitHash || '').trim();
+        const { repoUrl, commitSha } = normalizeGitHubVerifyPayload(body);
         const previewUrl = String(body.previewUrl || '').trim();
         const deliveryNotes = String(body.deliveryNotes || '').trim();
         const attachments = Array.isArray(body.attachments) ? body.attachments : [];
@@ -546,14 +544,14 @@ export function createPreviewServer() {
         let verificationReport = body.verificationReport || null;
         if (!verificationReport) {
           if (repoUrl && /github\.com/i.test(repoUrl)) {
-            const ghCheck = validateStrictGitHubVerifyInput({ repoUrl, commitHash: commitHash || 'HEAD' });
-            if (!ghCheck.ok) {
+            const ghCheck = validateStrictGitHubVerifyInput({ repoUrl, commitSha });
+            if (!ghCheck.valid) {
               sendJson(res, 400, { ok: false, error: ghCheck.error });
               return;
             }
           }
           const report = await runAutonomousVerificationAndAssessorLive(
-            { deliverableUrl: repoUrl, commitHash: commitHash || 'HEAD', deliverableNote: deliveryNotes },
+            { deliverableUrl: repoUrl, commitHash: commitSha, deliverableNote: deliveryNotes },
             body.scenario || 'PASS_100'
           );
           verificationReport = report;
@@ -562,7 +560,7 @@ export function createPreviewServer() {
         const resDeliver = submitDeliverable(serverEscrowState, contractId, {
           deliveredBy: body.deliveredBy || 'FREELANCER',
           repoUrl,
-          commitHash,
+          commitHash: commitSha,
           previewUrl,
           deliveryNotes,
           attachments,
