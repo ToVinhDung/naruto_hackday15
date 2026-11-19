@@ -1386,12 +1386,20 @@ export function openDisputeWithEvidence(state, contractId, actorContext = {}, re
     return { ok: false, error: 'Trọng tài không được tự ý mở tranh chấp thay cho các bên.' };
   }
   contract.status = 'DISPUTED';
+  contract.isFrozen = true;
   contract.vaultFrozen = true;
+  contract.timelockPaused = true;
   contract.ciVerified = false;
   contract.disputeOpenedBy = actorContext.actorId || actorRole || 'client';
   contract.disputeDeadline = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
   if (reason) contract.disputeReason = reason;
   contract.timelockRemaining = '❄️ ĐÓNG BĂNG TIMELOCK (Hạn xử lý 7 ngày)';
+  if (Array.isArray(contract.milestones)) {
+    const activeMs = contract.milestones.find(
+      (m) => !['RELEASED', 'COMPLETED', 'AUTO_RELEASED'].includes(m.status)
+    );
+    if (activeMs) activeMs.status = 'DISPUTED';
+  }
   return { ok: true, contract };
 }
 
@@ -1619,7 +1627,8 @@ export function initBrowserApp() {
       case 'PARTIALLY_RELEASED':
         return `<span class="pill pill-emerald">Giải ngân 1 phần</span>`;
       case 'DISPUTED':
-        return `<span class="pill pill-rose">❄️ Đang Tranh chấp</span>`;
+      case 'FROZEN':
+        return `<span class="pill pill-rose">❄️ Đã đóng băng quỹ (Chờ Trọng tài phân xử)</span>`;
       case 'COMPLETED':
       case 'RELEASED':
       case 'AUTO_RELEASED':
@@ -1823,7 +1832,10 @@ export function initBrowserApp() {
     activePopupContractId = c.id;
 
     if (txModalIdEl) txModalIdEl.textContent = c.id;
-    if (txModalStatusBadgeEl) txModalStatusBadgeEl.innerHTML = getStatusBadgeHtml(c.status);
+    const effectiveStatus = (c.isFrozen || c.vaultFrozen) && c.status !== 'RELEASED' && c.status !== 'COMPLETED' && c.status !== 'REFUNDED' && c.status !== 'SPLIT'
+      ? 'FROZEN'
+      : c.status;
+    if (txModalStatusBadgeEl) txModalStatusBadgeEl.innerHTML = getStatusBadgeHtml(effectiveStatus);
     if (txModalViewerRoleEl) {
       txModalViewerRoleEl.textContent = currentLoginRole.toUpperCase();
     }
@@ -1905,7 +1917,8 @@ export function initBrowserApp() {
 
     if (txModalRoleActionsEl) {
       if (currentLoginRole === 'client') {
-        const canAct = c.amount > 0 && c.status !== 'DISPUTED';
+        const isFrozenOrDisputed = c.status === 'DISPUTED' || c.status === 'FROZEN' || Boolean(c.isFrozen) || Boolean(c.vaultFrozen);
+        const canAct = c.amount > 0 && !isFrozenOrDisputed;
         const sellerSigned = Boolean(c.signatures?.freelancer || c.signatures?.seller);
         const releaseDisabledAttr = sellerSigned
           ? ''
@@ -3068,41 +3081,81 @@ export function initBrowserApp() {
       }
       requestContractRevision(state, cId, 'Yêu cầu bổ sung tiêu chí DoD');
     } else if (action === 'open-dispute') {
-      const openRes = openDisputeWithEvidence(state, cId, { role: currentLoginRole });
-      if (!openRes.ok) {
-        alert(openRes.error);
-        return;
-      }
-      let dossier;
+      const origDisputeBtnHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.textContent = '⏳ Đang đóng băng...';
       try {
-        dossier = await callDynamicApi('/api/agents/fact-finding', 'POST', contract);
-      } catch {
-        dossier = runFactFindingBailiffAgent(contract);
+        const openRes = openDisputeWithEvidence(state, cId, { role: currentLoginRole });
+        if (!openRes.ok) {
+          alert(openRes.error);
+          return;
+        }
+        try {
+          if (typeof fetch === 'function') {
+            const freezeRes = await fetch(`/api/contracts/${encodeURIComponent(cId)}/dispute`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-user-role': currentLoginRole || 'client'
+              },
+              body: JSON.stringify({
+                role: currentLoginRole || 'client',
+                reason: contract.disputeReason || 'Client mở tranh chấp & đóng băng quỹ',
+                evidences: contract.evidences || []
+              })
+            });
+            if (!freezeRes.ok) {
+              const errData = await freezeRes.json().catch(() => ({}));
+              throw new Error(errData.error || `API trả về lỗi ${freezeRes.status}`);
+            }
+            const freezeData = await freezeRes.json();
+            if (freezeData?.contract) {
+              const idx = state.contracts.findIndex((item) => item.id === cId);
+              if (idx >= 0) state.contracts[idx] = { ...state.contracts[idx], ...freezeData.contract };
+            }
+          }
+        } catch (apiErr) {
+          console.warn('Dispute API fallback to local state:', apiErr?.message);
+        }
+
+        const latestContract = state.contracts.find((item) => item.id === cId) || contract;
+        let dossier;
+        try {
+          dossier = await callDynamicApi('/api/agents/fact-finding', 'POST', latestContract);
+        } catch {
+          dossier = runFactFindingBailiffAgent(latestContract);
+        }
+        latestContract.recommendedSellerPercent = dossier.recommendedSellerPercent;
+        latestContract.recommendedBuyerPercent = dossier.recommendedBuyerPercent;
+        latestContract.failedStepText = dossier.dossierSections.automatedTestAudit;
+        if (dossier.recommendedSellerPercent === 0) {
+          latestContract.aiRecommendation = buildConsistentAgentRecommendation({
+            allObjectivePassed: false,
+            passedCount: 0,
+            totalCount: latestContract.latestVerification?.failedCriteria?.length || 1,
+            failedReasons: latestContract.latestVerification?.failedCriteria || [dossier.dossierSections.automatedTestAudit]
+          }).message;
+        } else {
+          latestContract.aiRecommendation = dossier.proposalStatement;
+        }
+        const proof = computeProofHashAndCid(`${cId}-dispute-${currentLoginRole}`);
+        state.ledger.unshift({
+          id: `EV-${Math.floor(1000 + Math.random() * 9000)}`,
+          contractId: cId,
+          time: new Date().toLocaleTimeString('vi-VN'),
+          role: currentLoginRole.toUpperCase(),
+          type: 'Mở Tranh chấp & Đóng băng Vault',
+          detail: `[${cId}] Freeze Vault (Hạn xử lý: 7 ngày) • Khuyến nghị: ${dossier.proposalStatement}`,
+          amount: latestContract.amount,
+          auditHash: proof.auditHash
+        });
+        renderAllTransactionUI();
+        openTransactionPopup(cId);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = origDisputeBtnHtml;
       }
-      contract.recommendedSellerPercent = dossier.recommendedSellerPercent;
-      contract.recommendedBuyerPercent = dossier.recommendedBuyerPercent;
-      contract.failedStepText = dossier.dossierSections.automatedTestAudit;
-      if (dossier.recommendedSellerPercent === 0) {
-        contract.aiRecommendation = buildConsistentAgentRecommendation({
-          allObjectivePassed: false,
-          passedCount: 0,
-          totalCount: contract.latestVerification?.failedCriteria?.length || 1,
-          failedReasons: contract.latestVerification?.failedCriteria || [dossier.dossierSections.automatedTestAudit]
-        }).message;
-      } else {
-        contract.aiRecommendation = dossier.proposalStatement;
-      }
-      const proof = computeProofHashAndCid(`${cId}-dispute-${currentLoginRole}`);
-      state.ledger.unshift({
-        id: `EV-${Math.floor(1000 + Math.random() * 9000)}`,
-        contractId: cId,
-        time: new Date().toLocaleTimeString('vi-VN'),
-        role: currentLoginRole.toUpperCase(),
-        type: 'Mở Tranh chấp & Đóng băng Vault',
-        detail: `[${cId}] Freeze Vault (Hạn xử lý: 7 ngày) • Khuyến nghị: ${dossier.proposalStatement}`,
-        amount: contract.amount,
-        auditHash: proof.auditHash
-      });
+      return;
     } else if (action === 'seller-sign') {
       contract.signatures.freelancer = true;
     } else if (action === 'arbiter-ai-bailiff') {

@@ -18,7 +18,7 @@ import {
   runFactFindingBailiffAgentLive,
   fetchAvalancheContext
 } from './agents.js';
-import { createInitialEscrowState, triggerTimelockAutoRelease, releasePartialMilestone, resolveDisputeByArbiter, submitDeliverable, requestContractRevision, createEscrowContract } from './app.js';
+import { createInitialEscrowState, triggerTimelockAutoRelease, releasePartialMilestone, resolveDisputeByArbiter, submitDeliverable, requestContractRevision, createEscrowContract, openDisputeWithEvidence } from './app.js';
 import { assertMultiSig2Of3 } from './engine/multiSigGuard.mjs';
 import { createBaseline, loadBaseline } from './engine/baselineManager.mjs';
 import { evaluateSubmission } from './engine/ruleEngine.mjs';
@@ -158,7 +158,7 @@ export function processAutoReleaseContracts(state, nowMs = Date.now()) {
   if (!state || !Array.isArray(state.contracts) || state.vaultPaused) return [];
   const releasedIds = [];
   for (const contract of state.contracts) {
-    if (contract.status !== 'SUBMITTED_PASSED' || contract.vaultFrozen) continue;
+    if (contract.status !== 'SUBMITTED_PASSED' || contract.vaultFrozen || contract.isFrozen || contract.timelockPaused) continue;
     const submittedAt = Number(contract.submittedAt);
     const inspectionWindowMs = Number(
       contract.inspectionWindowMs ?? contract.inspectionMs ?? (Number(contract.inspectionDays) || 3) * 86400000
@@ -625,6 +625,49 @@ export function createPreviewServer() {
         }
         persistEscrowStateToDisk(serverEscrowState);
         sendJson(res, 200, revResult);
+      } catch (err) {
+        sendJson(res, err.statusCode || 400, { ok: false, error: err.message });
+      }
+      return;
+    }
+
+    // API Đóng băng Quỹ / Mở Tranh chấp (POST /api/contracts/:id/dispute hoặc /freeze)
+    const disputeFreezeMatch = urlPath.match(/^\/api\/contracts\/([^/]+)\/(dispute|freeze)$/);
+    if (disputeFreezeMatch && req.method === 'POST') {
+      try {
+        const contractId = decodeURIComponent(disputeFreezeMatch[1]);
+        const actionMode = disputeFreezeMatch[2];
+        const body = await readJsonBody(req);
+        const contract = serverEscrowState.contracts.find((c) => c.id === contractId);
+        if (!contract) {
+          sendJson(res, 404, { ok: false, error: 'Không tìm thấy hợp đồng.' });
+          return;
+        }
+        if (Array.isArray(body.evidences) && body.evidences.length > 0 && (!Array.isArray(contract.evidences) || contract.evidences.length === 0)) {
+          contract.evidences = body.evidences;
+        }
+        if (actionMode === 'freeze' && (!Array.isArray(contract.evidences) || contract.evidences.length === 0)) {
+          contract.evidences = [{ id: `EV-${Date.now()}`, fileName: 'freeze-snapshot.json', uploadedBy: 'CLIENT' }];
+        }
+        const actorRole = String(body.role || req.headers['x-user-role'] || 'client').toLowerCase();
+        const openRes = openDisputeWithEvidence(
+          serverEscrowState,
+          contractId,
+          { role: actorRole, actorId: body.actorId },
+          String(body.reason || '').trim()
+        );
+        if (!openRes.ok) {
+          sendJson(res, 400, { ok: false, error: openRes.error });
+          return;
+        }
+        openRes.contract.isFrozen = true;
+        openRes.contract.vaultFrozen = true;
+        openRes.contract.timelockPaused = true;
+        if (actionMode === 'freeze') {
+          openRes.contract.status = 'FROZEN';
+        }
+        persistEscrowStateToDisk(serverEscrowState);
+        sendJson(res, 200, { ok: true, contract: openRes.contract });
       } catch (err) {
         sendJson(res, err.statusCode || 400, { ok: false, error: err.message });
       }
