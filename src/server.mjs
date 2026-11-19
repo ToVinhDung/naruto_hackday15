@@ -18,7 +18,7 @@ import {
   runFactFindingBailiffAgentLive,
   fetchAvalancheContext
 } from './agents.js';
-import { createInitialEscrowState, triggerTimelockAutoRelease, releasePartialMilestone, resolveDisputeByArbiter, submitDeliverable, requestContractRevision } from './app.js';
+import { createInitialEscrowState, triggerTimelockAutoRelease, releasePartialMilestone, resolveDisputeByArbiter, submitDeliverable, requestContractRevision, createEscrowContract } from './app.js';
 import { assertMultiSig2Of3 } from './engine/multiSigGuard.mjs';
 import { createBaseline, loadBaseline } from './engine/baselineManager.mjs';
 import { evaluateSubmission } from './engine/ruleEngine.mjs';
@@ -535,6 +535,23 @@ export function createPreviewServer() {
       return;
     }
 
+    // API Tạo & Nạp quỹ Hợp đồng mới (POST /api/contracts)
+    if (urlPath === '/api/contracts' && req.method === 'POST') {
+      try {
+        const body = await readJsonBody(req);
+        const createRes = createEscrowContract(serverEscrowState, body);
+        if (!createRes.ok) {
+          sendJson(res, 400, { ok: false, error: createRes.error });
+          return;
+        }
+        persistEscrowStateToDisk(serverEscrowState);
+        sendJson(res, 201, createRes);
+      } catch (err) {
+        sendJson(res, err.statusCode || 400, { ok: false, error: err.message });
+      }
+      return;
+    }
+
     // API Nộp bàn giao sản phẩm từ Freelancer sang Client (POST /api/contracts/:id/deliver)
     const deliverMatch = urlPath.match(/^\/api\/contracts\/([^/]+)\/deliver$/);
     if (deliverMatch && req.method === 'POST') {
@@ -581,6 +598,7 @@ export function createPreviewServer() {
           sendJson(res, 400, resDeliver);
           return;
         }
+        persistEscrowStateToDisk(serverEscrowState);
         sendJson(res, 200, resDeliver);
       } catch (err) {
         sendJson(res, err.statusCode || 400, { ok: false, error: err.message });
@@ -624,6 +642,11 @@ export function createPreviewServer() {
           sendJson(res, 404, { ok: false, error: 'Không tìm thấy hợp đồng.' });
           return;
         }
+        if (body.buyerSigned === true || String(req.headers['x-user-role'] || '').toLowerCase() === 'client') {
+          contract.signatures = contract.signatures || {};
+          contract.signatures.client = true;
+          contract.signatures.buyer = true;
+        }
         const sigCheck = assertMultiSig2Of3(contract, 'RELEASE');
         if (!sigCheck.ok) {
           sendJson(res, 403, { ok: false, error: sigCheck.error });
@@ -634,6 +657,7 @@ export function createPreviewServer() {
           sendJson(res, 400, result);
           return;
         }
+        persistEscrowStateToDisk(serverEscrowState);
         sendJson(res, 200, result);
       } catch (err) {
         sendJson(res, err.statusCode || 400, { ok: false, error: err.message });

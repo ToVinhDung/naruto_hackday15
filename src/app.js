@@ -66,16 +66,30 @@ export async function verifyArbiterTokenOnServer(token) {
   return { ok: true, token: cleanToken };
 }
 
+export const CONTRACT_STATUSES = {
+  DRAFT: 'DRAFT',
+  FUNDED: 'FUNDED',
+  IN_PROGRESS: 'IN_PROGRESS',
+  DELIVERED_TO_CLIENT: 'DELIVERED_TO_CLIENT',
+  REVISION_REQUESTED: 'REVISION_REQUESTED',
+  PARTIALLY_RELEASED: 'PARTIALLY_RELEASED',
+  DISPUTED: 'DISPUTED',
+  COMPLETED: 'COMPLETED',
+  RELEASED: 'RELEASED',
+  AUTO_RELEASED: 'AUTO_RELEASED',
+  REFUNDED: 'REFUNDED'
+};
+
 /**
  * Helper gọi REST API động (kèm fallback an toàn khi chạy trong môi trường Node test)
  */
-export async function callDynamicApi(endpoint, method = 'GET', payload = null) {
+export async function callDynamicApi(endpoint, method = 'GET', payload = null, extraHeaders = {}) {
   if (typeof fetch !== 'function') {
     throw new Error('Fetch API unavailable');
   }
   const options = {
     method,
-    headers: { 'Content-Type': 'application/json' }
+    headers: { 'Content-Type': 'application/json', ...extraHeaders }
   };
   if (payload && method !== 'GET') {
     options.body = JSON.stringify(payload);
@@ -993,12 +1007,14 @@ export function releasePartialMilestone(state, contractId, percent = 50) {
   if (requestedPct >= 100) {
     (contract.milestones || []).forEach((m) => {
       m.released = true;
+      m.status = 'COMPLETED';
     });
   } else if (firstPending) {
     firstPending.released = true;
+    firstPending.status = 'COMPLETED';
   }
 
-  contract.status = contract.amount === 0 ? 'RELEASED' : 'PARTIALLY_RELEASED';
+  contract.status = contract.amount === 0 ? 'COMPLETED' : 'PARTIALLY_RELEASED';
   contract.failedStepText = null;
   contract.aiRecommendation = null;
   state.freelancerBalance += feeInfo.netPayout;
@@ -1164,6 +1180,70 @@ export function submitDeliverable(state, contractId, payload = {}) {
   });
 
   return { ok: true, contract, latestDelivery: contract.latestDelivery };
+}
+
+/**
+ * Tạo hợp đồng mới & nạp quỹ vào Smart Vault (1/3 chữ ký Buyer).
+ */
+export function createEscrowContract(state, payload = {}) {
+  const title = String(payload.title || '').trim();
+  const titleCheck = validateContractTitle(title);
+  if (!titleCheck.valid) {
+    return { ok: false, error: titleCheck.error || 'Tên hợp đồng không hợp lệ.' };
+  }
+  const amount = Math.round(Number(payload.amount || 0));
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { ok: false, error: 'Số tiền hợp đồng phải lớn hơn 0.' };
+  }
+  if (state.clientBalance < amount) {
+    return { ok: false, error: 'Số dư ví Client không đủ để nạp quỹ hợp đồng.' };
+  }
+
+  state.clientBalance -= amount;
+  const id = payload.id || `ESC-${101 + (state.contracts?.length || 0)}`;
+  const milestones = buildContractMilestones(amount, payload.milestoneCount || 2).map((m) => ({
+    ...m,
+    status: CONTRACT_STATUSES.FUNDED
+  }));
+
+  const newContract = {
+    id,
+    title,
+    client: payload.client || 'Client (Buyer)',
+    freelancer: payload.freelancer || 'Freelancer (Seller)',
+    amount,
+    releasedSoFar: 0,
+    feePayer: payload.feePayer || 'FREELANCER',
+    status: CONTRACT_STATUSES.FUNDED,
+    vaultFrozen: false,
+    acceptanceCriteria: String(payload.acceptanceCriteria || 'Đạt 100% unit test & nghiệm thu Client').trim(),
+    revisionsUsed: 0,
+    maxRevisions: Number(payload.maxRevisions || 3),
+    inspectionDays: Number(payload.inspectionDays || 3),
+    signatureScheme: 'Multi-Sig 2-of-3 (EIP-712)',
+    signatures: { client: true, buyer: true, freelancer: false, seller: false, arbiter: false },
+    milestones,
+    evidences: [],
+    timelockRemaining: `Chờ Freelancer bàn giao (Timelock ${Number(payload.inspectionDays || 3)} ngày)`
+  };
+
+  state.contracts = Array.isArray(state.contracts) ? state.contracts : [];
+  state.contracts.unshift(newContract);
+
+  const proof = computeProofHashAndCid(`${id}-fund-${amount}`);
+  state.ledger = Array.isArray(state.ledger) ? state.ledger : [];
+  state.ledger.unshift({
+    id: `EV-${Math.floor(1000 + Math.random() * 9000)}`,
+    contractId: id,
+    time: new Date().toLocaleTimeString('vi-VN'),
+    role: 'CLIENT',
+    type: 'Tạo & Nạp quỹ Hợp đồng',
+    detail: `[${id}] Khóa ${formatVND(amount)} vào Smart Vault (1/3 chữ ký Buyer)`,
+    amount,
+    auditHash: proof.auditHash
+  });
+
+  return { ok: true, contract: newContract };
 }
 
 export function downloadEvidenceFile(evidence) {
@@ -1523,6 +1603,8 @@ export function initBrowserApp() {
 
   function getStatusBadgeHtml(status) {
     switch (status) {
+      case 'FUNDED':
+        return `<span class="pill pill-blue">Đã nạp quỹ (FUNDED)</span>`;
       case 'IN_PROGRESS':
         return `<span class="pill pill-blue">Đang thực hiện</span>`;
       case 'SUBMITTED':
@@ -1538,9 +1620,10 @@ export function initBrowserApp() {
         return `<span class="pill pill-emerald">Giải ngân 1 phần</span>`;
       case 'DISPUTED':
         return `<span class="pill pill-rose">❄️ Đang Tranh chấp</span>`;
+      case 'COMPLETED':
       case 'RELEASED':
       case 'AUTO_RELEASED':
-        return `<span class="pill pill-emerald">✓ Đã giải ngân${status === 'AUTO_RELEASED' ? ' (Auto)' : ''}</span>`;
+        return `<span class="pill pill-emerald">✓ Đã hoàn tất${status === 'AUTO_RELEASED' ? ' (Auto)' : ''}</span>`;
       case 'REFUNDED':
         return `<span class="pill">Đã hoàn trả Buyer</span>`;
       case 'SPLIT':

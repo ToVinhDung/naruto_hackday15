@@ -26,13 +26,15 @@ export const escapeBankText = value => String(value ?? '').replace(/[&<>"']/g, c
 const money = value => new Intl.NumberFormat('vi-VN').format(Math.round(Number(value) || 0)) + ' ₫';
 const fold = value => String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g,'d').replace(/Đ/g,'D').toLowerCase();
 const statuses = {
+  DRAFT: ['Bản nháp', 'blue'],
+  FUNDED: ['Đã nạp quỹ', 'blue'],
   IN_PROGRESS: ['Đang thực hiện', 'blue'],
   SUBMITTED: ['Chờ nghiệm thu', 'amber'],
   DELIVERED_TO_CLIENT: ['Chờ nghiệm thu (Đã bàn giao)', 'amber'],
   SUBMITTED_PASSED: ['Chờ nghiệm thu (Pass 100%)', 'green'],
   SUBMITTED_FAILED: ['Chưa đạt kiểm thử', 'red'],
   REVISION_REQUESTED: ['Cần chỉnh sửa', 'amber'], PARTIALLY_RELEASED: ['Giải ngân một phần', 'green'],
-  DISPUTED: ['Đang tranh chấp', 'red'], RELEASED: ['Đã giải ngân', 'green'],
+  DISPUTED: ['Đang tranh chấp', 'red'], COMPLETED: ['Đã hoàn tất', 'green'], RELEASED: ['Đã giải ngân', 'green'],
   AUTO_RELEASED: ['Đã tự động giải ngân', 'green'],
   REFUNDED: ['Đã hoàn trả', 'neutral'], SPLIT: ['Đã phân xử', 'neutral']
 };
