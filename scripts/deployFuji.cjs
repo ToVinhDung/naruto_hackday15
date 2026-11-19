@@ -3,6 +3,7 @@ const path = require('node:path');
 const hre = require('hardhat');
 
 async function main() {
+  await hre.run('compile');
   const [deployer] = await hre.ethers.getSigners();
   const agentRelay = process.env.AGENT_RELAY_ADDRESS || deployer.address;
 
@@ -15,6 +16,7 @@ async function main() {
   await contract.waitForDeployment();
 
   const contractAddress = await contract.getAddress();
+  const deployTx = contract.deploymentTransaction()?.hash || null;
   const artifact = await hre.artifacts.readArtifact('EscrowCore');
 
   const outDir = path.resolve(__dirname, '..', 'data');
@@ -26,6 +28,7 @@ async function main() {
     chainId: 43113,
     contractName: 'EscrowCore',
     contractAddress,
+    deployTx,
     deployer: deployer.address,
     agentRelay,
     deployedAt: new Date().toISOString(),
