@@ -444,6 +444,27 @@ test('Luồng chuyển giao DELIVERED_TO_CLIENT: submitDeliverable, POST /api/co
     assert.equal(body.contract.signatures.seller, true);
     assert.equal(body.latestDelivery.previewUrl, 'https://preview.vibe.dev');
     assert.equal(body.latestDelivery.commitHash, '9f8c2a1');
+
+    // 5. Client gọi API gửi yêu cầu sửa (POST /api/contracts/:id/request-revision)
+    const revRes = await fetch(`http://127.0.0.1:${port}/api/contracts/ESC-101/request-revision`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-user-role': 'client'
+      },
+      body: JSON.stringify({
+        reason: 'Cần bổ sung unit test cho input âm và lỗi 400'
+      })
+    });
+    assert.equal(revRes.status, 200);
+    const revBody = await revRes.json();
+    assert.equal(revBody.ok, true);
+    assert.equal(revBody.contract.status, 'REVISION_REQUESTED');
+    assert.ok(revBody.contract.activeRevision);
+    assert.equal(revBody.contract.activeRevision.reason, 'Cần bổ sung unit test cho input âm và lỗi 400');
+    assert.equal(revBody.contract.signatures.seller, false);
+    assert.equal(Array.isArray(revBody.contract.revisionHistory), true);
+    assert.equal(fs.existsSync('data/db.json'), true);
   } finally {
     server.close();
   }

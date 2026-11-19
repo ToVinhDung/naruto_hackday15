@@ -18,7 +18,7 @@ import {
   runFactFindingBailiffAgentLive,
   fetchAvalancheContext
 } from './agents.js';
-import { createInitialEscrowState, triggerTimelockAutoRelease, releasePartialMilestone, resolveDisputeByArbiter, submitDeliverable } from './app.js';
+import { createInitialEscrowState, triggerTimelockAutoRelease, releasePartialMilestone, resolveDisputeByArbiter, submitDeliverable, requestContractRevision } from './app.js';
 import { assertMultiSig2Of3 } from './engine/multiSigGuard.mjs';
 import { createBaseline, loadBaseline } from './engine/baselineManager.mjs';
 import { evaluateSubmission } from './engine/ruleEngine.mjs';
@@ -76,6 +76,16 @@ const MIME_TYPES = {
 // Dữ liệu động trên bộ nhớ Server (In-memory Dynamic Store)
 let serverEscrowState = createInitialEscrowState();
 const latestEvaluationReports = new Map();
+
+function persistEscrowStateToDisk(state) {
+  try {
+    const dbPath = path.join(ROOT_DIR, 'data', 'db.json');
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    fs.writeFileSync(dbPath, JSON.stringify(state, null, 2), 'utf8');
+  } catch {
+    // Bỏ qua nếu môi trường chỉ đọc
+  }
+}
 
 function readJsonBody(req, maxBytes = MAX_REQUEST_BODY_BYTES) {
   return new Promise((resolve, reject) => {
@@ -572,6 +582,31 @@ export function createPreviewServer() {
           return;
         }
         sendJson(res, 200, resDeliver);
+      } catch (err) {
+        sendJson(res, err.statusCode || 400, { ok: false, error: err.message });
+      }
+      return;
+    }
+
+    // API Client gửi yêu cầu chỉnh sửa hợp đồng (POST /api/contracts/:id/request-revision)
+    const revMatch = urlPath.match(/^\/api\/contracts\/([^/]+)\/request-revision$/);
+    if (revMatch && req.method === 'POST') {
+      try {
+        const contractId = decodeURIComponent(revMatch[1]);
+        const body = await readJsonBody(req);
+        const contract = serverEscrowState.contracts.find((c) => c.id === contractId);
+        if (!contract) {
+          sendJson(res, 404, { ok: false, error: 'Không tìm thấy hợp đồng.' });
+          return;
+        }
+        const reason = String(body.reason || body.comment || body.message || '').trim();
+        const revResult = requestContractRevision(serverEscrowState, contractId, reason);
+        if (!revResult.ok) {
+          sendJson(res, 400, { ok: false, error: revResult.error });
+          return;
+        }
+        persistEscrowStateToDisk(serverEscrowState);
+        sendJson(res, 200, revResult);
       } catch (err) {
         sendJson(res, err.statusCode || 400, { ok: false, error: err.message });
       }

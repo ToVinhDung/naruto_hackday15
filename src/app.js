@@ -896,6 +896,13 @@ export function createInitialEscrowState() {
 export function requestContractRevision(state, contractId, reason) {
   const contract = state.contracts.find((c) => c.id === contractId);
   if (!contract) return { ok: false, error: 'Không tìm thấy hợp đồng.' };
+  const blockedStatuses = new Set(['COMPLETED', 'RELEASED', 'AUTO_RELEASED', 'REFUNDED', 'DISPUTED']);
+  if (contract.vaultFrozen || blockedStatuses.has(contract.status)) {
+    return {
+      ok: false,
+      error: `Không thể yêu cầu chỉnh sửa khi hợp đồng đang ở trạng thái ${contract.status}.`
+    };
+  }
   if (contract.revisionsUsed >= contract.maxRevisions) {
     return {
       ok: false,
@@ -908,6 +915,32 @@ export function requestContractRevision(state, contractId, reason) {
   contract.status = 'REVISION_REQUESTED';
   contract.ciVerified = false;
   contract.clientRevisionComment = comment;
+  contract.signatures = contract.signatures || {};
+  contract.signatures.seller = false;
+  contract.signatures.freelancer = false;
+
+  const activeRevision = {
+    id: `REV-${contract.revisionsUsed}`,
+    revisionNumber: contract.revisionsUsed,
+    reason: comment,
+    requestedBy: 'CLIENT',
+    requestedAt: new Date().toISOString(),
+    status: 'OPEN',
+    scopeCreepWarning: scopeCheck.hasScopeCreepRisk ? scopeCheck.warningMessage : null
+  };
+  contract.activeRevision = activeRevision;
+  contract.revisionHistory = Array.isArray(contract.revisionHistory) ? contract.revisionHistory : [];
+  contract.revisionHistory.unshift(activeRevision);
+
+  if (Array.isArray(contract.milestones)) {
+    const pendingMs = contract.milestones.find(
+      (m) => !['RELEASED', 'COMPLETED', 'AUTO_RELEASED'].includes(m.status)
+    );
+    if (pendingMs) {
+      pendingMs.status = 'REVISION_REQUESTED';
+    }
+  }
+
   contract.scopeCreepWarning = scopeCheck.hasScopeCreepRisk ? scopeCheck.warningMessage : null;
   contract.failedStepText = `Client yêu cầu chỉnh sửa (Lần ${contract.revisionsUsed}/${contract.maxRevisions}): "${comment}"`;
   contract.aiRecommendation = scopeCheck.hasScopeCreepRisk
@@ -924,7 +957,7 @@ export function requestContractRevision(state, contractId, reason) {
     amount: contract.amount,
     auditHash: proof.auditHash
   });
-  return { ok: true, contract, scopeCreepRisk: scopeCheck };
+  return { ok: true, contract, activeRevision, scopeCreepRisk: scopeCheck };
 }
 
 export function releasePartialMilestone(state, contractId, percent = 50) {
@@ -1500,7 +1533,7 @@ export function initBrowserApp() {
       case 'SUBMITTED_FAILED':
         return `<span class="pill pill-rose">⚠️ Nộp chưa đạt</span>`;
       case 'REVISION_REQUESTED':
-        return `<span class="pill pill-rose">⚠️ Không Pass (Chờ sửa)</span>`;
+        return `<span class="pill pill-rose">⚠️ Cần chỉnh sửa (REVISION_REQUESTED)</span>`;
       case 'PARTIALLY_RELEASED':
         return `<span class="pill pill-emerald">Giải ngân 1 phần</span>`;
       case 'DISPUTED':
@@ -2848,26 +2881,63 @@ export function initBrowserApp() {
   });
 
   txModalRoleActionsEl?.addEventListener('click', async (e) => {
-    const btn = e.target.closest('[data-popup-action]');
-    if (!btn) return;
-    if (e.target.id === 'btn-cancel-revision-form') {
+    const cancelRevBtn = e.target.closest('#btn-cancel-revision-form');
+    if (cancelRevBtn) {
       const revBox = document.getElementById('tx-revision-form-box');
       if (revBox) revBox.hidden = true;
       return;
     }
-    if (e.target.id === 'btn-submit-revision-form') {
-      const targetCId = e.target.getAttribute('data-id') || activePopupContractId;
+    const submitRevBtn = e.target.closest('#btn-submit-revision-form');
+    if (submitRevBtn) {
+      const targetCId = submitRevBtn.getAttribute('data-id') || activePopupContractId;
       const revInput = document.getElementById('tx-revision-note-input');
       const customReason = (revInput?.value || '').trim() || 'Yêu cầu bổ sung tiêu chí nghiệm thu DoD';
-      const res = requestContractRevision(state, targetCId, customReason);
-      if (!res.ok) {
-        alert(res.error);
-        return;
+
+      submitRevBtn.disabled = true;
+      const origText = submitRevBtn.textContent;
+      submitRevBtn.textContent = '⏳ Đang gửi...';
+      try {
+        let updatedContract = null;
+        if (typeof fetch === 'function') {
+          const response = await fetch(`/api/contracts/${encodeURIComponent(targetCId)}/request-revision`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-user-role': currentLoginRole || 'client'
+            },
+            body: JSON.stringify({ reason: customReason, comment: customReason })
+          });
+          if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            throw new Error(errData.error || errData.message || `API trả về lỗi ${response.status}`);
+          }
+          const apiData = await response.json();
+          updatedContract = apiData?.contract || null;
+        }
+
+        if (updatedContract) {
+          const idx = state.contracts.findIndex((item) => item.id === targetCId);
+          if (idx >= 0) state.contracts[idx] = { ...state.contracts[idx], ...updatedContract };
+        } else {
+          const res = requestContractRevision(state, targetCId, customReason);
+          if (!res.ok) throw new Error(res.error);
+        }
+
+        const revBox = document.getElementById('tx-revision-form-box');
+        if (revBox) revBox.hidden = true;
+        renderAllTransactionUI();
+        openTransactionPopup(targetCId);
+      } catch (err) {
+        alert(`✖ Không thể gửi yêu cầu chỉnh sửa: ${err.message}`);
+      } finally {
+        submitRevBtn.disabled = false;
+        submitRevBtn.textContent = origText;
       }
-      await syncStateWithServer(true);
-      renderAllTransactionUI();
       return;
     }
+
+    const btn = e.target.closest('[data-popup-action]');
+    if (!btn) return;
 
     const action = btn.getAttribute('data-popup-action');
     const cId = btn.getAttribute('data-id');
