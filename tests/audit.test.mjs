@@ -301,12 +301,14 @@ test('buildConsistentAgentRecommendation: không bao giờ mâu thuẫn giữa t
   assert.match(passRec.message, /giải ngân/);
 });
 
-test('Defense-in-Depth: Security Headers, Anti-SSRF, Rate Limiter (5/phút) và tách biệt Backend/Frontend', async () => {
+test('Defense-in-Depth: Security Headers, Anti-SSRF, Rate Limiter (30/phút + cấu hình env) và tách biệt Backend/Frontend', async () => {
   const appJs = fs.readFileSync('src/app.js', 'utf8');
   assert.equal(/from\s+['"]\.\/tools\//.test(appJs), false);
   assert.equal(/from\s+['"]\.\/blockchain\//.test(appJs), false);
   assert.equal(fs.existsSync('.env.example'), true);
 
+  const prevHeavy = process.env.RATE_LIMIT_MAX_HEAVY;
+  process.env.RATE_LIMIT_MAX_HEAVY = '5';
   const server = createPreviewServer();
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address();
@@ -339,7 +341,7 @@ test('Defense-in-Depth: Security Headers, Anti-SSRF, Rate Limiter (5/phút) và 
     });
     assert.equal(badShaRes.status, 400);
 
-    // 4. Rate Limiter (5 req/phút cho heavy endpoints -> req thứ 6 bị 429)
+    // 4. Rate Limiter (theo RATE_LIMIT_MAX_HEAVY=5 -> req thứ 6 bị 429 kèm thông báo tiếng Việt)
     for (let i = 0; i < 3; i++) {
       await fetch(`http://127.0.0.1:${port}/api/milestones/ESC-101/verify-github`, {
         method: 'POST',
@@ -353,7 +355,29 @@ test('Defense-in-Depth: Security Headers, Anti-SSRF, Rate Limiter (5/phút) và 
       body: JSON.stringify({ repoUrl: 'https://evil.com/a/b', commitSha: 'HEAD' })
     });
     assert.equal(rateLimitedRes.status, 429);
+    const rateBody = await rateLimitedRes.json();
+    assert.match(rateBody.error, /Bạn thao tác quá nhanh, vui lòng thử lại sau \d+ giây\./);
+
+    // 5. Mặc định RATE_LIMIT_MAX_HEAVY là 30 req/phút khi không set env
+    delete process.env.RATE_LIMIT_MAX_HEAVY;
+    const defaultServer = createPreviewServer();
+    await new Promise((resolve) => defaultServer.listen(0, '127.0.0.1', resolve));
+    const defaultPort = defaultServer.address().port;
+    try {
+      for (let i = 0; i < 6; i++) {
+        const r = await fetch(`http://127.0.0.1:${defaultPort}/api/milestones/ESC-101/verify-github`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ repoUrl: 'https://evil.com/a/b', commitSha: 'HEAD' })
+        });
+        assert.notEqual(r.status, 429);
+      }
+    } finally {
+      defaultServer.close();
+    }
   } finally {
+    if (prevHeavy === undefined) delete process.env.RATE_LIMIT_MAX_HEAVY;
+    else process.env.RATE_LIMIT_MAX_HEAVY = prevHeavy;
     server.close();
   }
 });

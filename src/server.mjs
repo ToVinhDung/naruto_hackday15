@@ -28,6 +28,7 @@ import { calculateFrozenFundSplit } from './engine/settlementCalculator.mjs';
 import { parseGitHubUrl, validateStrictGitHubVerifyInput, fetchGitHubCommitDetails, runSandboxTests } from './tools/githubVerifier.mjs';
 import { AGENT_VERIFICATION_TOOLS, executeAgentTool } from './tools/agentTools.mjs';
 import { anchorProofOnFuji } from './blockchain/fujiBridge.mjs';
+import { createRateLimiter } from './middleware/apiSecurity.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -178,25 +179,6 @@ function sendJson(res, statusCode, data) {
   res.end(JSON.stringify(data));
 }
 
-function createRateLimiter() {
-  const buckets = new Map();
-  return function checkRateLimit(req, urlPath) {
-    const isHeavy = /\/(verify-github|refine-criteria|suggest-criteria)$/.test(urlPath);
-    const limit = isHeavy ? 5 : 60;
-    const windowMs = 60000;
-    const ip = req.socket?.remoteAddress || '127.0.0.1';
-    const key = `${ip}:${isHeavy ? 'heavy' : 'api'}`;
-    const now = Date.now();
-    const entries = (buckets.get(key) || []).filter((ts) => now - ts < windowMs);
-    if (entries.length >= limit) {
-      return { allowed: false, limit };
-    }
-    entries.push(now);
-    buckets.set(key, entries);
-    return { allowed: true, limit };
-  };
-}
-
 function verifyWriteAuthorization(req) {
   const claimedRole = String(req.headers['x-user-role'] || '').toLowerCase();
   const bearer = String(req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim();
@@ -219,7 +201,12 @@ export function createPreviewServer() {
     if (urlPath.startsWith('/api/')) {
       const rate = checkRateLimit(req, urlPath);
       if (!rate.allowed) {
-        sendJson(res, 429, { ok: false, error: `Rate limit exceeded (tối đa ${rate.limit} req/phút).` });
+        sendJson(res, 429, {
+          ok: false,
+          error: rate.error || `Bạn thao tác quá nhanh, vui lòng thử lại sau ${rate.retryAfterSeconds || 60} giây.`,
+          retryAfterSeconds: rate.retryAfterSeconds || 60,
+          limit: rate.limit
+        });
         return;
       }
       if (req.method === 'POST' && urlPath !== '/api/auth/arbiter') {
@@ -437,6 +424,7 @@ export function createPreviewServer() {
         }
 
         const parsedGh = parseGitHubUrl(repoUrl);
+        const hasGithubToken = Boolean(process.env.GITHUB_TOKEN && process.env.GITHUB_TOKEN.trim());
         const [commitDetails, sandbox] = await Promise.all([
           parsedGh.valid
             ? fetchGitHubCommitDetails({
@@ -447,6 +435,19 @@ export function createPreviewServer() {
             : Promise.resolve({ ok: false, changedFiles: [] }),
           runSandboxTests({ repoUrl, commitSha, testCommand })
         ]);
+
+        if (parsedGh.valid && commitDetails && !commitDetails.ok && (commitDetails.status === 429 || commitDetails.status === 403)) {
+          const reasonMsg = !hasGithubToken
+            ? `GitHub API trả về mã ${commitDetails.status} (vượt giới hạn truy cập) do hệ thống chưa cấu hình GITHUB_TOKEN trong biến môi trường (.env).`
+            : `GitHub API đang giới hạn tốc độ (${commitDetails.status}), vui lòng thử lại sau ít phút.`;
+          sendJson(res, 429, {
+            ok: false,
+            error: reasonMsg,
+            missingGithubToken: !hasGithubToken,
+            githubStatus: commitDetails.status
+          });
+          return;
+        }
 
         const changedFiles =
           Array.isArray(commitDetails.changedFiles) && commitDetails.changedFiles.length > 0
