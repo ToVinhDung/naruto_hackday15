@@ -1405,16 +1405,21 @@ export function openDisputeWithEvidence(state, contractId, actorContext = {}, re
 
 export function resolveDisputeByArbiter(state, contractId, resolution, customBuyerPercent = 35, actorContext = {}) {
   const contract = state.contracts.find((c) => c.id === contractId);
-  if (!contract || contract.status !== 'DISPUTED') {
+  const isDisputedOrFrozen = contract && (contract.status === 'DISPUTED' || contract.status === 'FROZEN' || contract.isFrozen);
+  if (!isDisputedOrFrozen) {
     return { ok: false, error: 'Hợp đồng không tồn tại hoặc không ở trạng thái tranh chấp.' };
   }
   const actorRole = String(actorContext.role || '').toLowerCase();
   const actorId = actorContext.actorId ? String(actorContext.actorId) : '';
-  if (actorRole === 'client' || actorRole === 'freelancer') {
-    return { ok: false, error: 'Xung đột lợi ích: Client hoặc Freelancer của hợp đồng không được phép tự xử tranh chấp.' };
+  if (actorRole === 'client' || actorRole === 'freelancer' || (actorRole && actorRole !== 'arbiter')) {
+    return { ok: false, error: 'Xung đột lợi ích hoặc sai vai trò: Chỉ Trọng tài (Arbiter) mới được phép phân xử tranh chấp.' };
   }
   if (actorId && (actorId === contract.clientId || actorId === contract.freelancer || actorId === contract.disputeOpenedBy)) {
     return { ok: false, error: 'Xung đột lợi ích: Người xử tranh chấp không được trùng với người mở tranh chấp hoặc các bên hợp đồng.' };
+  }
+  if (actorContext.arbiterSigned === true && actorRole === 'arbiter') {
+    contract.signatures = contract.signatures || {};
+    contract.signatures.arbiter = true;
   }
   const sigCheck = assertMultiSig2Of3(contract, 'DISPUTE_RESOLUTION');
   if (!sigCheck.ok) {
@@ -1432,11 +1437,17 @@ export function resolveDisputeByArbiter(state, contractId, resolution, customBuy
   let detailText = '';
 
   if (resolution === 'RELEASE_FREELANCER') {
-    contract.status = 'RELEASED';
+    contract.status = 'COMPLETED';
+    contract.isFrozen = false;
+    contract.vaultFrozen = false;
+    contract.timelockPaused = false;
     sellerShare = distributable;
     detailText = `Arbiter giải ngân 100% [${contract.id}] cho ${contract.freelancer} (Net: ${formatVND(sellerShare)})`;
   } else if (resolution === 'REFUND_CLIENT') {
     contract.status = 'REFUNDED';
+    contract.isFrozen = false;
+    contract.vaultFrozen = false;
+    contract.timelockPaused = false;
     buyerShare = grossAmount;
     detailText = `Arbiter hoàn trả 100% [${contract.id}] về ví Client không trừ phí (${formatVND(buyerShare)})`;
   } else if (resolution === 'SPLIT_50_50') {
@@ -1992,7 +2003,7 @@ export function initBrowserApp() {
         const recBuyer = bailiff.recommendedBuyerPercent;
         const recSeller = bailiff.recommendedSellerPercent;
         txModalRoleActionsEl.innerHTML =
-          c.status === 'DISPUTED' && c.amount > 0
+          (c.status === 'DISPUTED' || c.status === 'FROZEN' || c.isFrozen) && c.amount > 0
             ? `<div class="split-slider-box">
                 <div style="display:flex;justify-content:space-between;font-size:0.76rem;font-weight:700;margin-bottom:0.3rem;">
                   <span>⚖️ Phán quyết Trọng tài:</span>
@@ -2012,6 +2023,9 @@ export function initBrowserApp() {
                   <button type="button" class="btn btn-rose btn-sm" data-popup-action="arbiter-refund" data-id="${c.id}">
                     100% Buyer
                   </button>
+                </div>
+                <div style="font-size:0.72rem;color:var(--text-secondary);margin-top:0.4rem;">
+                  💡 Bấm phán quyết sẽ tự động đính kèm chữ ký số của Trọng tài (Arbiter) để hoàn tất điều kiện Multi-Sig 2-of-3.
                 </div>
                </div>`
             : '';
@@ -3160,23 +3174,24 @@ export function initBrowserApp() {
       contract.signatures.freelancer = true;
     } else if (action === 'arbiter-ai-bailiff') {
       const recBuyerPct = Number(btn.getAttribute('data-buyer-percent') ?? contract.recommendedBuyerPercent ?? 100);
-      const r = resolveDisputeByArbiter(state, cId, 'CUSTOM_SPLIT', recBuyerPct, { role: currentLoginRole });
+      const r = resolveDisputeByArbiter(state, cId, 'CUSTOM_SPLIT', recBuyerPct, { role: currentLoginRole, arbiterSigned: true });
       if (!r.ok) { alert(r.error); return; }
     } else if (action === 'arbiter-custom-split') {
       const slider = document.getElementById('popup-split-slider');
       const pct = slider ? Number(slider.value) : 35;
-      const r = resolveDisputeByArbiter(state, cId, 'CUSTOM_SPLIT', pct, { role: currentLoginRole });
+      const r = resolveDisputeByArbiter(state, cId, 'CUSTOM_SPLIT', pct, { role: currentLoginRole, arbiterSigned: true });
       if (!r.ok) { alert(r.error); return; }
     } else if (action === 'arbiter-release') {
-      const r = resolveDisputeByArbiter(state, cId, 'RELEASE_FREELANCER', 0, { role: currentLoginRole });
+      const r = resolveDisputeByArbiter(state, cId, 'RELEASE_FREELANCER', 0, { role: currentLoginRole, arbiterSigned: true });
       if (!r.ok) { alert(r.error); return; }
     } else if (action === 'arbiter-refund') {
-      const r = resolveDisputeByArbiter(state, cId, 'REFUND_CLIENT', 100, { role: currentLoginRole });
+      const r = resolveDisputeByArbiter(state, cId, 'REFUND_CLIENT', 100, { role: currentLoginRole, arbiterSigned: true });
       if (!r.ok) { alert(r.error); return; }
     }
 
     await syncStateWithServer(true);
     renderAllTransactionUI();
+    if (activePopupContractId === cId) openTransactionPopup(cId);
   });
 
   // Upload File Bằng chứng trong Popup

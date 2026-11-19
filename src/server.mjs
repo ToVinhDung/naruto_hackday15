@@ -719,22 +719,20 @@ export function createPreviewServer() {
           sendJson(res, 404, { ok: false, error: 'Không tìm thấy hợp đồng.' });
           return;
         }
-        const sigCheck = assertMultiSig2Of3(contract, 'DISPUTE_RESOLUTION');
-        if (!sigCheck.ok) {
-          sendJson(res, 403, { ok: false, error: sigCheck.error });
-          return;
-        }
+        const actorRole = String(body.role || req.headers['x-user-role'] || '').toLowerCase();
         const result = resolveDisputeByArbiter(
           serverEscrowState,
           contractId,
           body.resolution || 'CUSTOM_SPLIT',
           body.customBuyerPercent ?? 35,
-          { role: 'arbiter', actorId: body.actorId }
+          { role: actorRole || 'arbiter', actorId: body.actorId, arbiterSigned: Boolean(body.arbiterSigned) }
         );
         if (!result.ok) {
-          sendJson(res, 400, result);
+          const status = /Multi-Sig|xung đột|vai trò/i.test(result.error || '') ? 403 : 400;
+          sendJson(res, status, result);
           return;
         }
+        persistEscrowStateToDisk(serverEscrowState);
         sendJson(res, 200, result);
       } catch (err) {
         sendJson(res, err.statusCode || 400, { ok: false, error: err.message });
