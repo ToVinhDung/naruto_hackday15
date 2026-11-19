@@ -18,6 +18,7 @@ import {
   detectScopeCreepRisk,
   buildConsistentAgentRecommendation
 } from './agents.js';
+import { countValidSignatures, assertMultiSig2Of3 } from './engine/multiSigGuard.mjs';
 
 export {
   ESCROW_AGENTS_MATRIX,
@@ -27,7 +28,9 @@ export {
   isValidGitHubUrl,
   validateContractTitle,
   detectScopeCreepRisk,
-  buildConsistentAgentRecommendation
+  buildConsistentAgentRecommendation,
+  countValidSignatures,
+  assertMultiSig2Of3
 };
 
 /**
@@ -422,8 +425,7 @@ export function buildContractMilestones(totalAmount, count = 2) {
 }
 
 export function countMultiSignatures(signatures) {
-  if (!signatures) return 0;
-  return [signatures.client, signatures.freelancer, signatures.arbiter].filter(Boolean).length;
+  return countValidSignatures(signatures);
 }
 
 export function validateTopupAmount(rawAmount) {
@@ -928,8 +930,9 @@ export function releasePartialMilestone(state, contractId, percent = 50) {
   }
   const contract = state.contracts.find((c) => c.id === contractId);
   if (!contract) return { ok: false, error: 'Không tìm thấy hợp đồng.' };
-  if (countMultiSignatures(contract.signatures) < 2) {
-    return { ok: false, error: 'Chưa đủ chữ ký Multi-Sig 2-of-3 để giải ngân.' };
+  const sigCheck = assertMultiSig2Of3(contract, 'RELEASE');
+  if (!sigCheck.ok) {
+    return { ok: false, error: sigCheck.error };
   }
 
   const requestedPct = Number(percent ?? 50);
@@ -1173,9 +1176,6 @@ export function resolveDisputeByArbiter(state, contractId, resolution, customBuy
   if (!contract || contract.status !== 'DISPUTED') {
     return { ok: false, error: 'Hợp đồng không tồn tại hoặc không ở trạng thái tranh chấp.' };
   }
-  if (countMultiSignatures(contract.signatures) < 2) {
-    return { ok: false, error: 'Chưa đủ chữ ký Multi-Sig 2-of-3 để thực thi phán quyết.' };
-  }
   const actorRole = String(actorContext.role || '').toLowerCase();
   const actorId = actorContext.actorId ? String(actorContext.actorId) : '';
   if (actorRole === 'client' || actorRole === 'freelancer') {
@@ -1183,6 +1183,10 @@ export function resolveDisputeByArbiter(state, contractId, resolution, customBuy
   }
   if (actorId && (actorId === contract.clientId || actorId === contract.freelancer || actorId === contract.disputeOpenedBy)) {
     return { ok: false, error: 'Xung đột lợi ích: Người xử tranh chấp không được trùng với người mở tranh chấp hoặc các bên hợp đồng.' };
+  }
+  const sigCheck = assertMultiSig2Of3(contract, 'DISPUTE_RESOLUTION');
+  if (!sigCheck.ok) {
+    return { ok: false, error: sigCheck.error };
   }
 
   const grossAmount = contract.amount;
@@ -1612,13 +1616,17 @@ export function initBrowserApp() {
     if (txModalRoleActionsEl) {
       if (currentLoginRole === 'client') {
         const canAct = c.amount > 0 && c.status !== 'DISPUTED';
+        const releaseSigCheck = assertMultiSig2Of3(c, 'RELEASE');
+        const releaseDisabledAttr = releaseSigCheck.ok
+          ? ''
+          : `disabled title="${escapeHtml(releaseSigCheck.error)}"`;
         txModalRoleActionsEl.innerHTML = canAct
           ? `<div class="contract-actions">
-              <button type="button" class="btn btn-emerald btn-sm" data-popup-action="client-release" data-id="${c.id}">
+              <button type="button" class="btn btn-emerald btn-sm" data-popup-action="client-release" data-id="${escapeHtml(c.id)}" ${releaseDisabledAttr}>
                 ✓ Nghiệm thu & Giải ngân 100%
               </button>
-              <button type="button" class="btn btn-secondary btn-sm" data-popup-action="client-partial" data-id="${c.id}">
-                ◑ Giải ngân Milestone (50%)
+              <button type="button" class="btn btn-secondary btn-sm" data-popup-action="client-partial" data-id="${escapeHtml(c.id)}" ${releaseDisabledAttr}>
+                ◑ Giải ngân Milestone
               </button>
               <button type="button" class="btn btn-secondary btn-sm" data-popup-action="client-revision" data-id="${escapeHtml(c.id)}">
                 ↺ Yêu cầu Sửa (${c.revisionsUsed}/${c.maxRevisions})

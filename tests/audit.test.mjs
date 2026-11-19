@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import {
   createInitialEscrowState,
   countMultiSignatures,
+  countValidSignatures,
+  assertMultiSig2Of3,
   releasePartialMilestone,
   resolveDisputeByArbiter,
   openDisputeWithEvidence,
@@ -48,7 +50,9 @@ test('P1-2 & P1-3: Bắt buộc Multi-Sig >= 2 khi giải ngân/phân xử, khô
   const state = createInitialEscrowState();
 
   // ESC-102 chỉ có 1 chữ ký (client: true, freelancer: false, arbiter: false) -> chặn releasePartialMilestone
-  assert.equal(countMultiSignatures(state.contracts.find((c) => c.id === 'ESC-102').signatures), 1);
+  const c102 = state.contracts.find((c) => c.id === 'ESC-102');
+  assert.equal(countValidSignatures(c102.signatures), 1);
+  assert.equal(assertMultiSig2Of3(c102, 'RELEASE').ok, false);
   const blockedPartial = releasePartialMilestone(state, 'ESC-102', 50);
   assert.equal(blockedPartial.ok, false);
 
@@ -59,13 +63,18 @@ test('P1-2 & P1-3: Bắt buộc Multi-Sig >= 2 khi giải ngân/phân xử, khô
   const conflictFreelancer = resolveDisputeByArbiter(state, 'ESC-103', 'CUSTOM_SPLIT', 50, { role: 'freelancer' });
   assert.equal(conflictFreelancer.ok, false);
 
-  // Trọng tài hợp lệ xử tranh chấp với >= 2 chữ ký
+  // DISPUTE_RESOLUTION thiếu chữ ký arbiter -> bị chặn (không tự động gán arbiter=true)
   const c103 = state.contracts.find((c) => c.id === 'ESC-103');
   c103.signatures = { client: true, freelancer: true, arbiter: false };
+  const blockedNoArbiter = resolveDisputeByArbiter(state, 'ESC-103', 'CUSTOM_SPLIT', 40, { role: 'arbiter', actorId: 'arbiter-dao' });
+  assert.equal(blockedNoArbiter.ok, false);
+  assert.equal(c103.signatures.arbiter, false);
+
+  // Khi Arbiter đã ký cùng ít nhất 1 bên (2/3) -> phân xử hợp lệ
+  c103.signatures = { client: false, freelancer: true, arbiter: true };
+  assert.equal(assertMultiSig2Of3(c103, 'DISPUTE_RESOLUTION').ok, true);
   const okResolve = resolveDisputeByArbiter(state, 'ESC-103', 'CUSTOM_SPLIT', 40, { role: 'arbiter', actorId: 'arbiter-dao' });
   assert.equal(okResolve.ok, true);
-  // Không tự động gán signatures.arbiter = true
-  assert.equal(c103.signatures.arbiter, false);
 });
 
 test('P1-5 & P1-10: Chặn POST /api/state (405), lọc ẩn số dư vai trò khác trên GET /api/state và giới hạn body 1MB', async () => {
@@ -256,7 +265,8 @@ test('Single Source of Truth: nộp repo GitHub rỗng (0 điểm) -> mở tranh
   assert.equal(dossier.recommendedBuyerPercent, 100);
   assert.match(dossier.proposalStatement, /0% cho Freelancer và hoàn trả 100% cho Client/);
 
-  // Thanh trượt / phán quyết Trọng tài áp dụng đúng 0% Freelancer / 100% Client
+  // Thanh trượt / phán quyết Trọng tài áp dụng đúng 0% Freelancer / 100% Client sau khi Arbiter ký
+  c.signatures.arbiter = true;
   const beforeClient = state.clientBalance;
   const lockedAmount = c.amount;
   const resolveRes = resolveDisputeByArbiter(state, 'ESC-101', 'CUSTOM_SPLIT', dossier.recommendedBuyerPercent, { role: 'arbiter' });

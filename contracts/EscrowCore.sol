@@ -132,6 +132,10 @@ contract EscrowCore {
         require(ms.funded && !ms.released, "Milestone not releasable");
 
         WorkAgreement storage agr = agreements[ms.agreementId];
+        uint8 validSignatureCount = 0;
+        if (agr.clientSigned) validSignatureCount += 1;
+        if (agr.freelancerSigned) validSignatureCount += 1;
+        require(validSignatureCount >= 2, "Multi-Sig 2-of-3 required");
         require(agr.clientSigned && agr.freelancerSigned, "Requires 2-party signature");
         require(msg.sender == agr.client || msg.sender == agr.arbitrator, "Only client or arbitrator");
 

@@ -18,7 +18,8 @@ import {
   runFactFindingBailiffAgentLive,
   fetchAvalancheContext
 } from './agents.js';
-import { createInitialEscrowState, triggerTimelockAutoRelease } from './app.js';
+import { createInitialEscrowState, triggerTimelockAutoRelease, releasePartialMilestone, resolveDisputeByArbiter } from './app.js';
+import { assertMultiSig2Of3 } from './engine/multiSigGuard.mjs';
 import { createBaseline, loadBaseline } from './engine/baselineManager.mjs';
 import { evaluateSubmission } from './engine/ruleEngine.mjs';
 import { refineVagueCriteria, loadHistoricalBaselines } from './engine/criteriaRefiner.mjs';
@@ -520,6 +521,68 @@ export function createPreviewServer() {
         });
       } catch (err) {
         sendJson(res, err.statusCode || 400, { error: err.message });
+      }
+      return;
+    }
+
+    // API Giải ngân Milestone có kiểm tra Multi-Sig 2-of-3 bắt buộc
+    const releaseMatch = urlPath.match(/^\/api\/milestones\/([^/]+)\/release$/);
+    if (releaseMatch && req.method === 'POST') {
+      try {
+        const contractId = decodeURIComponent(releaseMatch[1]);
+        const body = await readJsonBody(req);
+        const contract = serverEscrowState.contracts.find((c) => c.id === contractId);
+        if (!contract) {
+          sendJson(res, 404, { ok: false, error: 'Không tìm thấy hợp đồng.' });
+          return;
+        }
+        const sigCheck = assertMultiSig2Of3(contract, 'RELEASE');
+        if (!sigCheck.ok) {
+          sendJson(res, 403, { ok: false, error: sigCheck.error });
+          return;
+        }
+        const result = releasePartialMilestone(serverEscrowState, contractId, body.percent ?? 50);
+        if (!result.ok) {
+          sendJson(res, 400, result);
+          return;
+        }
+        sendJson(res, 200, result);
+      } catch (err) {
+        sendJson(res, err.statusCode || 400, { ok: false, error: err.message });
+      }
+      return;
+    }
+
+    // API Phân xử Tranh chấp có kiểm tra Multi-Sig 2-of-3 & Chống xung đột lợi ích
+    const resolveMatch = urlPath.match(/^\/api\/milestones\/([^/]+)\/resolve-dispute$/);
+    if (resolveMatch && req.method === 'POST') {
+      try {
+        const contractId = decodeURIComponent(resolveMatch[1]);
+        const body = await readJsonBody(req);
+        const contract = serverEscrowState.contracts.find((c) => c.id === contractId);
+        if (!contract) {
+          sendJson(res, 404, { ok: false, error: 'Không tìm thấy hợp đồng.' });
+          return;
+        }
+        const sigCheck = assertMultiSig2Of3(contract, 'DISPUTE_RESOLUTION');
+        if (!sigCheck.ok) {
+          sendJson(res, 403, { ok: false, error: sigCheck.error });
+          return;
+        }
+        const result = resolveDisputeByArbiter(
+          serverEscrowState,
+          contractId,
+          body.resolution || 'CUSTOM_SPLIT',
+          body.customBuyerPercent ?? 35,
+          { role: 'arbiter', actorId: body.actorId }
+        );
+        if (!result.ok) {
+          sendJson(res, 400, result);
+          return;
+        }
+        sendJson(res, 200, result);
+      } catch (err) {
+        sendJson(res, err.statusCode || 400, { ok: false, error: err.message });
       }
       return;
     }
