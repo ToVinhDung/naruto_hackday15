@@ -1748,8 +1748,10 @@ export function initBrowserApp() {
 
     if (txModalOverviewEl) {
       const ld = c.latestDelivery;
+      const isClientViewer = currentLoginRole === 'client' || state.activeRole === 'buyer';
+      const isFreelancerViewer = currentLoginRole === 'freelancer' || state.activeRole === 'seller';
       let deliveryPanelHtml = '';
-      if (ld) {
+      if (ld && isClientViewer) {
         const deadlineMs = (ld.deliveredAt || Date.now()) + (c.inspectionDays || 3) * 86400000;
         const remainingMs = Math.max(0, deadlineMs - Date.now());
         const remHours = Math.floor(remainingMs / 3600000);
@@ -1776,6 +1778,21 @@ export function initBrowserApp() {
               ${hitlItems.map((item, idx) => `<label style="display:flex;align-items:center;gap:0.35rem;font-size:0.75rem;"><input type="checkbox" data-hitl-check="${idx}" /> <span>${escapeHtml(typeof item === 'string' ? item : item.text || item.label || '')}</span></label>`).join('')}
             </div>
           </div>`;
+      } else if (isFreelancerViewer) {
+        if (c.status === 'REVISION_REQUESTED') {
+          const revReason = c.activeRevision?.reason || c.clientRevisionComment || 'Client yêu cầu chỉnh sửa bổ sung.';
+          deliveryPanelHtml = `
+            <div class="contract-subbox" style="margin-top:0.55rem;background:#FFFBEB;border:1px solid #FCD34D;font-size:0.78rem;">
+              <div style="font-weight:800;color:#92400E;margin-bottom:0.25rem;">🛠️ Yêu cầu chỉnh sửa từ Client (${c.revisionsUsed}/${c.maxRevisions})</div>
+              <div style="color:var(--text-primary);font-weight:600;">"${escapeHtml(revReason)}"</div>
+            </div>`;
+        } else if (ld) {
+          deliveryPanelHtml = `
+            <div class="contract-subbox" style="margin-top:0.55rem;background:#EFF6FF;border:1px solid #BFDBFE;font-size:0.78rem;">
+              <div style="font-weight:700;color:#1E40AF;">⏳ Đã gửi gói bàn giao cho Client duyệt</div>
+              ${ld.commitHash ? `<div style="margin-top:0.2rem;">Commit: <code>${escapeHtml(ld.commitHash)}</code>${ld.previewUrl ? ` • Preview: <a href="${escapeHtml(ld.previewUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(ld.previewUrl)}</a>` : ''}</div>` : ''}
+            </div>`;
+        }
       }
 
       txModalOverviewEl.innerHTML = `
