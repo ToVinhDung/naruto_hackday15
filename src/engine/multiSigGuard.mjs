@@ -74,3 +74,4 @@ export function assertMultiSig2Of3(contract, actionType = 'RELEASE') {
 
   return { ok: true, count, missing: [] };
 }
+

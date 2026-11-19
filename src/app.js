@@ -675,6 +675,7 @@ export function createInitialEscrowState() {
     clientBalance: 15000000,
     freelancerBalance: 8450000,
     platformFeesCollected: 320000,
+    notifications: [],
     pendingTopups: [
       {
         id: 'TOPUP-101',
@@ -1020,6 +1021,114 @@ export function triggerTimelockAutoRelease(state, contractId, options = {}) {
   });
 
   return { ok: true, contract, feeInfo };
+}
+
+/**
+ * Đóng gói sản phẩm bàn giao từ Freelancer sang Client (DELIVERED_TO_CLIENT),
+ * tự động gắn chữ ký bên bán (seller/freelancer = true), ghi ledger và thông báo cho Client.
+ */
+export function submitDeliverable(state, contractId, payload = {}) {
+  const contract = state?.contracts?.find((c) => c.id === contractId);
+  if (!contract) {
+    return { ok: false, error: 'Không tìm thấy hợp đồng để nộp bàn giao.' };
+  }
+  if (contract.vaultFrozen || contract.status === 'DISPUTED') {
+    return { ok: false, error: 'Hợp đồng đang đóng băng tranh chấp, không thể nộp bàn giao mới.' };
+  }
+
+  const deliveredAt = Date.now();
+  const repoUrl = String(payload.repoUrl || contract.commitUrl || '').trim();
+  const commitHash = String(payload.commitHash || '').trim();
+  const previewUrl = String(payload.previewUrl || '').trim();
+  const deliveryNotes = String(payload.deliveryNotes || '').trim();
+  const attachments = Array.isArray(payload.attachments) ? payload.attachments : [];
+  const verificationReport = payload.verificationReport || null;
+  const isPassed = verificationReport ? Boolean(verificationReport.allObjectivePassed) : true;
+
+  const proof = computeProofHashAndCid(
+    JSON.stringify({
+      contractId: contract.id,
+      repoUrl,
+      commitHash,
+      previewUrl,
+      deliveredAt,
+      passed: isPassed
+    })
+  );
+  const testReportHash = payload.testReportHash || proof.auditHash;
+
+  contract.latestDelivery = {
+    deliveredBy: payload.deliveredBy || 'FREELANCER',
+    deliveredAt,
+    repoUrl,
+    commitHash,
+    previewUrl,
+    deliveryNotes,
+    attachments,
+    verificationReport,
+    testReportHash
+  };
+
+  contract.signatures = contract.signatures || { client: false, freelancer: false, arbiter: false };
+  contract.signatures.freelancer = true;
+  contract.signatures.seller = true;
+
+  contract.submittedAt = deliveredAt;
+  if (repoUrl) contract.commitUrl = repoUrl;
+  if (previewUrl) contract.previewUrl = previewUrl;
+  contract.status = payload.statusOverride || (isPassed ? 'DELIVERED_TO_CLIENT' : 'REVISION_REQUESTED');
+
+  if (verificationReport) {
+    if (isPassed) {
+      contract.failedStepText = null;
+      contract.aiRecommendation =
+        verificationReport.recommendation ||
+        buildConsistentAgentRecommendation({
+          allObjectivePassed: true,
+          passedCount: verificationReport.passedCount ?? 1,
+          totalCount: verificationReport.totalCount ?? 1,
+          failedReasons: []
+        });
+    } else {
+      const reasons = Array.isArray(verificationReport.failedReasons)
+        ? verificationReport.failedReasons
+        : [];
+      contract.failedStepText = reasons.join('; ') || 'Chưa đạt 100% tiêu chí kiểm thử tự động.';
+      contract.aiRecommendation =
+        verificationReport.recommendation ||
+        buildConsistentAgentRecommendation({
+          allObjectivePassed: false,
+          passedCount: verificationReport.passedCount ?? 0,
+          totalCount: verificationReport.totalCount ?? 1,
+          failedReasons: reasons
+        });
+    }
+  }
+
+  state.ledger = Array.isArray(state.ledger) ? state.ledger : [];
+  state.ledger.unshift({
+    id: `EV-${Math.floor(1000 + Math.random() * 9000)}`,
+    time: new Date(deliveredAt).toLocaleTimeString('vi-VN'),
+    role: 'FREELANCER',
+    type: isPassed ? 'Deliverable Submitted (Client Review)' : 'Deliverable Submitted (Failed Test)',
+    detail: `[${contract.id}] Freelancer nộp bàn giao${commitHash ? ` (commit ${commitHash})` : ''}${previewUrl ? ` • Preview: ${previewUrl}` : ''} • Hash: ${testReportHash.slice(0, 12)}...`,
+    amount: 0,
+    auditHash: testReportHash
+  });
+
+  state.notifications = Array.isArray(state.notifications) ? state.notifications : [];
+  state.notifications.unshift({
+    id: `NOTIF-${Math.floor(1000 + Math.random() * 9000)}`,
+    toRole: 'CLIENT',
+    contractId: contract.id,
+    type: 'DELIVERABLE_SUBMITTED',
+    title: `📦 Gói bàn giao mới cho ${contract.id}`,
+    message: deliveryNotes || `Freelancer đã nộp sản phẩm${previewUrl ? ` tại ${previewUrl}` : ''}.`,
+    createdAt: new Date(deliveredAt).toISOString(),
+    read: false
+  });
+
+  return { ok: true, contract, latestDelivery: contract.latestDelivery };
 }
 
 export function downloadEvidenceFile(evidence) {
@@ -1382,7 +1491,12 @@ export function initBrowserApp() {
       case 'IN_PROGRESS':
         return `<span class="pill pill-blue">Đang thực hiện</span>`;
       case 'SUBMITTED':
-        return `<span class="pill pill-emerald">✓ Đã nộp bàn giao</span>`;
+      case 'DELIVERED_TO_CLIENT':
+        return `<span class="pill pill-emerald">📦 Đã bàn giao cho Client</span>`;
+      case 'SUBMITTED_PASSED':
+        return `<span class="pill pill-emerald">✓ Đã nộp (Đạt 100%)</span>`;
+      case 'SUBMITTED_FAILED':
+        return `<span class="pill pill-rose">⚠️ Nộp chưa đạt</span>`;
       case 'REVISION_REQUESTED':
         return `<span class="pill pill-rose">⚠️ Không Pass (Chờ sửa)</span>`;
       case 'PARTIALLY_RELEASED':
@@ -1512,12 +1626,21 @@ export function initBrowserApp() {
             <div>• Hồ sơ tranh chấp: <strong>${disputedCount} vụ</strong></div>`;
         }
 
+        const deliveredCount = state.contracts.filter(
+          (c) => c.status === 'DELIVERED_TO_CLIENT' || c.status === 'SUBMITTED_PASSED'
+        ).length;
+        const clientDeliveryBadge =
+          currentLoginRole === 'client' && idx === 0 && deliveredCount > 0
+            ? `<span class="pill pill-emerald" style="margin-left:auto;">📦 ${deliveredCount} gói bàn giao mới</span>`
+            : '';
+
         return `
         <button type="button" class="zone-big-btn" data-open-fullscreen-zone="${z.id}">
           <div class="zone-big-top">
             <div class="zone-big-header">
               <span class="zone-big-icon">${z.icon}</span>
               <span class="pill ${roleCfg.badgeClass}">${z.tag}</span>
+              ${clientDeliveryBadge}
             </div>
             <div class="zone-big-title">${z.title}</div>
             <div class="zone-big-desc">${z.desc}</div>
@@ -1589,6 +1712,37 @@ export function initBrowserApp() {
     if (txModalTitleEl) txModalTitleEl.textContent = `[${c.id}] ${c.title}`;
 
     if (txModalOverviewEl) {
+      const ld = c.latestDelivery;
+      let deliveryPanelHtml = '';
+      if (ld) {
+        const deadlineMs = (ld.deliveredAt || Date.now()) + (c.inspectionDays || 3) * 86400000;
+        const remainingMs = Math.max(0, deadlineMs - Date.now());
+        const remHours = Math.floor(remainingMs / 3600000);
+        const remMins = Math.floor((remainingMs % 3600000) / 60000);
+        const timelockCountdown = remainingMs > 0 ? `Còn ${remHours} giờ ${remMins} phút` : 'Đã hết hạn kiểm tra';
+        const vr = ld.verificationReport || {};
+        const hitlItems = Array.isArray(c.acceptanceCriteriaList) && c.acceptanceCriteriaList.length
+          ? c.acceptanceCriteriaList
+          : ['Giao diện & trải nghiệm đúng mô tả', 'Hoạt động ổn định trên Preview URL'];
+        deliveryPanelHtml = `
+          <div class="contract-subbox" style="margin-top:0.55rem;background:#F0FDF4;border:1px solid #86EFAC;font-size:0.78rem;">
+            <div style="font-weight:800;color:#166534;margin-bottom:0.35rem;display:flex;justify-content:space-between;align-items:center;">
+              <span>📦 Sản phẩm Freelancer vừa bàn giao</span>
+              <span class="pill pill-emerald">⏳ Timelock: ${timelockCountdown}</span>
+            </div>
+            ${ld.repoUrl ? `<div><strong>GitHub Commit URL:</strong> <a href="${escapeHtml(ld.repoUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(ld.repoUrl)}</a> ${ld.commitHash ? `<code>(${escapeHtml(ld.commitHash)})</code>` : ''}</div>` : ''}
+            ${ld.previewUrl ? `<div><strong>Preview URL:</strong> <a href="${escapeHtml(ld.previewUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(ld.previewUrl)}</a></div>` : ''}
+            ${ld.deliveryNotes ? `<div><strong>Ghi chú bàn giao:</strong> ${escapeHtml(ld.deliveryNotes)}</div>` : ''}
+            <div style="margin-top:0.35rem;padding:0.4rem 0.55rem;background:#FFFFFF;border:1px solid #BBF7D0;border-radius:var(--radius-sm);">
+              <div><strong>Kết quả Test Tự động:</strong> ${vr.allObjectivePassed === false ? '⚠️ Chưa đạt' : '✓ Đạt chuẩn'} • <strong>Report Hash:</strong> <code>${escapeHtml(ld.testReportHash || c.proofHash || 'N/A')}</code></div>
+            </div>
+            <div style="margin-top:0.35rem;">
+              <div style="font-weight:700;color:#166534;margin-bottom:0.2rem;">Kiểm tra thủ công (SUBJECTIVE / HITL):</div>
+              ${hitlItems.map((item, idx) => `<label style="display:flex;align-items:center;gap:0.35rem;font-size:0.75rem;"><input type="checkbox" data-hitl-check="${idx}" /> <span>${escapeHtml(typeof item === 'string' ? item : item.text || item.label || '')}</span></label>`).join('')}
+            </div>
+          </div>`;
+      }
+
       txModalOverviewEl.innerHTML = `
         <div class="contract-subbox" style="font-size:0.78rem;">
           <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.35rem;">
@@ -1608,6 +1762,7 @@ export function initBrowserApp() {
           ` : ''}
           ${renderAgentAlertIfFailed(c)}
         </div>
+        ${deliveryPanelHtml}
         ${renderMilestonesMini(c)}
         ${renderMultiSigBar(c)}
       `;
@@ -1616,14 +1771,14 @@ export function initBrowserApp() {
     if (txModalRoleActionsEl) {
       if (currentLoginRole === 'client') {
         const canAct = c.amount > 0 && c.status !== 'DISPUTED';
-        const releaseSigCheck = assertMultiSig2Of3(c, 'RELEASE');
-        const releaseDisabledAttr = releaseSigCheck.ok
+        const sellerSigned = Boolean(c.signatures?.freelancer || c.signatures?.seller);
+        const releaseDisabledAttr = sellerSigned
           ? ''
-          : `disabled title="${escapeHtml(releaseSigCheck.error)}"`;
+          : `disabled title="${escapeHtml('Chờ Freelancer nộp bàn giao & ký số Seller (Multi-Sig 2-of-3)')}"`;
         txModalRoleActionsEl.innerHTML = canAct
           ? `<div class="contract-actions">
               <button type="button" class="btn btn-emerald btn-sm" data-popup-action="client-release" data-id="${escapeHtml(c.id)}" ${releaseDisabledAttr}>
-                ✓ Nghiệm thu & Giải ngân 100%
+                ✓ Ký duyệt nghiệm thu & Giải ngân
               </button>
               <button type="button" class="btn btn-secondary btn-sm" data-popup-action="client-partial" data-id="${escapeHtml(c.id)}" ${releaseDisabledAttr}>
                 ◑ Giải ngân Milestone
@@ -2718,9 +2873,17 @@ export function initBrowserApp() {
     if (!contract) return;
 
     if (action === 'client-release') {
-      releasePartialMilestone(state, cId, 100);
+      contract.signatures = contract.signatures || {};
+      contract.signatures.client = true;
+      contract.signatures.buyer = true;
+      const relRes = releasePartialMilestone(state, cId, 100);
+      if (!relRes.ok) alert(relRes.error);
     } else if (action === 'client-partial') {
-      releasePartialMilestone(state, cId, 50);
+      contract.signatures = contract.signatures || {};
+      contract.signatures.client = true;
+      contract.signatures.buyer = true;
+      const relRes = releasePartialMilestone(state, cId, 50);
+      if (!relRes.ok) alert(relRes.error);
     } else if (action === 'client-revision') {
       const revBox = document.getElementById('tx-revision-form-box');
       if (revBox) {
@@ -3548,6 +3711,7 @@ export function initBrowserApp() {
       const url = (deliverableUrlInput?.value || '').trim();
       const rawCommit = (commitInput?.value || '').trim();
       const commit = rawCommit || 'commit#9f8c2a1';
+      const previewUrl = (document.getElementById('freelancer-preview-url')?.value || '').trim();
       const note = (deliverableNoteInput?.value || '').trim();
       const scenario = simScenarioSelect?.value || 'PASS_100';
 
@@ -3638,22 +3802,39 @@ export function initBrowserApp() {
           ? `Bước ${failedStep.step} (${failedStep.tool}): ${failedStep.log}`
           : (contract.latestVerification?.failedCriteria || []).join('; ');
         contract.aiRecommendation = effectivePassed ? null : consistentRec.message;
-        contract.signatures.freelancer = true;
-        contract.status = effectivePassed ? 'SUBMITTED' : 'REVISION_REQUESTED';
         contract.timelockRemaining = effectivePassed
           ? `Còn ${contract.inspectionDays} ngày (Auto-Release)`
           : 'Tạm dừng chờ sửa lỗi theo khuyến nghị';
 
-        state.ledger.unshift({
-          id: `EV-${Math.floor(1000 + Math.random() * 9000)}`,
-          contractId: contract.id,
-          time: new Date().toLocaleTimeString('vi-VN'),
-          role: 'FREELANCER',
-          type: effectivePassed ? 'Nộp Bàn giao (Pass 100%)' : 'Nộp Bàn giao (Không Pass Kiểm thử)',
-          detail: `[${contract.id}] ${consistentRec.message}`,
-          amount: contract.amount,
-          auditHash: report.testReportHash.slice(7, 17)
-        });
+        const deliverPayload = {
+          repoUrl: url,
+          commitHash: commit,
+          previewUrl,
+          deliveryNotes: note,
+          scenario,
+          verificationReport: {
+            ...report,
+            allObjectivePassed: effectivePassed,
+            passedCount: contract.latestVerification?.passedCriteria?.length || (effectivePassed ? 4 : 0),
+            totalCount:
+              (contract.latestVerification?.passedCriteria?.length || 0) +
+                (contract.latestVerification?.failedCriteria?.length || 0) || 4,
+            failedReasons: contract.latestVerification?.failedCriteria || [],
+            recommendation: consistentRec.message
+          },
+          testReportHash: report.testReportHash
+        };
+
+        try {
+          const apiDeliver = await callDynamicApi(`/api/contracts/${encodeURIComponent(contract.id)}/deliver`, 'POST', deliverPayload);
+          if (apiDeliver?.contract) {
+            Object.assign(contract, apiDeliver.contract);
+          } else {
+            submitDeliverable(state, contract.id, deliverPayload);
+          }
+        } catch {
+          submitDeliverable(state, contract.id, deliverPayload);
+        }
 
         await syncStateWithServer(true);
         renderAllTransactionUI();

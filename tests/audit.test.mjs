@@ -14,7 +14,8 @@ import {
   evaluateGuardrailCommand,
   calculateFeeBreakdown,
   buildContractMilestones,
-  submitClientTopup
+  submitClientTopup,
+  submitDeliverable
 } from '../src/app.js';
 import { validateContractTitle, detectScopeCreepRisk, runFactFindingBailiffAgent, buildConsistentAgentRecommendation } from '../src/agents.js';
 import { createPreviewServer, processAutoReleaseContracts } from '../src/server.mjs';
@@ -356,4 +357,72 @@ test('Defense-in-Depth: Security Headers, Anti-SSRF, Rate Limiter (5/phút) và 
     server.close();
   }
 });
+
+test('Luồng chuyển giao DELIVERED_TO_CLIENT: submitDeliverable, POST /api/contracts/:id/deliver, và Client ký duyệt giải ngân', async () => {
+  const state = createInitialEscrowState();
+  const c = state.contracts[0];
+  c.status = 'IN_PROGRESS';
+  c.signatures = { client: false, freelancer: false, arbiter: false };
+  const initialFreelancerBal = state.freelancerBalance;
+
+  // 1. Freelancer nộp bàn giao qua submitDeliverable -> DELIVERED_TO_CLIENT + seller=true + notifications
+  const res = submitDeliverable(state, c.id, {
+    repoUrl: 'https://github.com/vibe/demo-app',
+    commitHash: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
+    previewUrl: 'https://demo-app.vercel.app',
+    deliveryNotes: 'Đã hoàn thành API & UI',
+    verificationReport: {
+      allObjectivePassed: true,
+      passedCount: 4,
+      totalCount: 4,
+      failedReasons: []
+    }
+  });
+  assert.equal(res.ok, true);
+  assert.equal(c.status, 'DELIVERED_TO_CLIENT');
+  assert.equal(c.signatures.seller, true);
+  assert.equal(c.signatures.freelancer, true);
+  assert.equal(c.latestDelivery.previewUrl, 'https://demo-app.vercel.app');
+  assert.ok(c.latestDelivery.testReportHash);
+  assert.equal(state.notifications.length > 0, true);
+  assert.equal(state.notifications[0].toRole, 'CLIENT');
+
+  // 2. Client chưa ký -> assertMultiSig2Of3('RELEASE') phải chặn
+  assert.equal(assertMultiSig2Of3(c, 'RELEASE').ok, false);
+
+  // 3. Client bấm "Ký duyệt nghiệm thu & Giải ngân" -> set buyer=true/client=true -> giải ngân thành công
+  c.signatures.client = true;
+  c.signatures.buyer = true;
+  assert.equal(assertMultiSig2Of3(c, 'RELEASE').ok, true);
+  const relRes = releasePartialMilestone(state, c.id, 100);
+  assert.equal(relRes.ok, true);
+  assert.equal(state.freelancerBalance > initialFreelancerBal, true);
+
+  // 4. Kiểm tra API POST /api/contracts/:id/deliver trên server
+  const server = createPreviewServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  try {
+    const deliverRes = await fetch(`http://127.0.0.1:${port}/api/contracts/ESC-101/deliver`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        repoUrl: 'https://github.com/vercel/next.js',
+        commitHash: '1234567890abcdef1234567890abcdef12345678',
+        previewUrl: 'https://preview.vibe.dev',
+        deliveryNotes: 'Bàn giao bản v1.0',
+        verificationReport: { allObjectivePassed: true, passedCount: 4, totalCount: 4 }
+      })
+    });
+    assert.equal(deliverRes.status, 200);
+    const body = await deliverRes.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.contract.status, 'DELIVERED_TO_CLIENT');
+    assert.equal(body.contract.signatures.seller, true);
+    assert.equal(body.latestDelivery.previewUrl, 'https://preview.vibe.dev');
+  } finally {
+    server.close();
+  }
+});
+
 

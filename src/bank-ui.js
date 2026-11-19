@@ -26,9 +26,14 @@ export const escapeBankText = value => String(value ?? '').replace(/[&<>"']/g, c
 const money = value => new Intl.NumberFormat('vi-VN').format(Math.round(Number(value) || 0)) + ' ₫';
 const fold = value => String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g,'d').replace(/Đ/g,'D').toLowerCase();
 const statuses = {
-  IN_PROGRESS: ['Đang thực hiện', 'blue'], SUBMITTED: ['Chờ nghiệm thu', 'amber'],
+  IN_PROGRESS: ['Đang thực hiện', 'blue'],
+  SUBMITTED: ['Chờ nghiệm thu', 'amber'],
+  DELIVERED_TO_CLIENT: ['Chờ nghiệm thu (Đã bàn giao)', 'amber'],
+  SUBMITTED_PASSED: ['Chờ nghiệm thu (Pass 100%)', 'green'],
+  SUBMITTED_FAILED: ['Chưa đạt kiểm thử', 'red'],
   REVISION_REQUESTED: ['Cần chỉnh sửa', 'amber'], PARTIALLY_RELEASED: ['Giải ngân một phần', 'green'],
   DISPUTED: ['Đang tranh chấp', 'red'], RELEASED: ['Đã giải ngân', 'green'],
+  AUTO_RELEASED: ['Đã tự động giải ngân', 'green'],
   REFUNDED: ['Đã hoàn trả', 'neutral'], SPLIT: ['Đã phân xử', 'neutral']
 };
 export function filterBankContracts(contracts, query = '', filter = 'ALL') {
@@ -47,7 +52,9 @@ export function summarizeBankState(state, role) {
   const pending = role === 'freelancer' ? [] : (state.pendingTopups || []).filter(t => t.status === 'PENDING_APPROVAL');
   return {locked, frozen, pending, disputed, active:contracts.filter(c => c.amount > 0),
     wallet: role === 'client' ? state.clientBalance : role === 'freelancer' ? state.freelancerBalance : null,
-    review: contracts.filter(c => c.status === (role === 'freelancer' ? 'REVISION_REQUESTED' : 'SUBMITTED'))};
+    review: contracts.filter(c => role === 'freelancer'
+      ? c.status === 'REVISION_REQUESTED'
+      : ['SUBMITTED', 'DELIVERED_TO_CLIENT', 'SUBMITTED_PASSED'].includes(c.status))};
 }
 
 export function createBankDashboard({openZone, openContract, getState, getRole}) {

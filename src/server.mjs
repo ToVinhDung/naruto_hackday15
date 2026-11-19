@@ -18,7 +18,7 @@ import {
   runFactFindingBailiffAgentLive,
   fetchAvalancheContext
 } from './agents.js';
-import { createInitialEscrowState, triggerTimelockAutoRelease, releasePartialMilestone, resolveDisputeByArbiter } from './app.js';
+import { createInitialEscrowState, triggerTimelockAutoRelease, releasePartialMilestone, resolveDisputeByArbiter, submitDeliverable } from './app.js';
 import { assertMultiSig2Of3 } from './engine/multiSigGuard.mjs';
 import { createBaseline, loadBaseline } from './engine/baselineManager.mjs';
 import { evaluateSubmission } from './engine/ruleEngine.mjs';
@@ -521,6 +521,60 @@ export function createPreviewServer() {
         });
       } catch (err) {
         sendJson(res, err.statusCode || 400, { error: err.message });
+      }
+      return;
+    }
+
+    // API Nộp bàn giao sản phẩm từ Freelancer sang Client (POST /api/contracts/:id/deliver)
+    const deliverMatch = urlPath.match(/^\/api\/contracts\/([^/]+)\/deliver$/);
+    if (deliverMatch && req.method === 'POST') {
+      try {
+        const contractId = decodeURIComponent(deliverMatch[1]);
+        const body = await readJsonBody(req);
+        const contract = serverEscrowState.contracts.find((c) => c.id === contractId);
+        if (!contract) {
+          sendJson(res, 404, { ok: false, error: 'Không tìm thấy hợp đồng.' });
+          return;
+        }
+        const repoUrl = String(body.repoUrl || '').trim();
+        const commitHash = String(body.commitHash || '').trim();
+        const previewUrl = String(body.previewUrl || '').trim();
+        const deliveryNotes = String(body.deliveryNotes || '').trim();
+        const attachments = Array.isArray(body.attachments) ? body.attachments : [];
+
+        let verificationReport = body.verificationReport || null;
+        if (!verificationReport) {
+          if (repoUrl && /github\.com/i.test(repoUrl)) {
+            const ghCheck = validateStrictGitHubVerifyInput({ repoUrl, commitHash: commitHash || 'HEAD' });
+            if (!ghCheck.ok) {
+              sendJson(res, 400, { ok: false, error: ghCheck.error });
+              return;
+            }
+          }
+          const report = await runAutonomousVerificationAndAssessorLive(
+            { deliverableUrl: repoUrl, commitHash: commitHash || 'HEAD', deliverableNote: deliveryNotes },
+            body.scenario || 'PASS_100'
+          );
+          verificationReport = report;
+        }
+
+        const resDeliver = submitDeliverable(serverEscrowState, contractId, {
+          deliveredBy: body.deliveredBy || 'FREELANCER',
+          repoUrl,
+          commitHash,
+          previewUrl,
+          deliveryNotes,
+          attachments,
+          verificationReport,
+          testReportHash: body.testReportHash || verificationReport?.testReportHash
+        });
+        if (!resDeliver.ok) {
+          sendJson(res, 400, resDeliver);
+          return;
+        }
+        sendJson(res, 200, resDeliver);
+      } catch (err) {
+        sendJson(res, err.statusCode || 400, { ok: false, error: err.message });
       }
       return;
     }
