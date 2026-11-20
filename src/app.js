@@ -1390,6 +1390,8 @@ export function openDisputeWithEvidence(state, contractId, actorContext = {}, re
   contract.vaultFrozen = true;
   contract.timelockPaused = true;
   contract.ciVerified = false;
+  contract.resolutionAccepted = { buyer: false, seller: false };
+  contract.appealCounts = contract.appealCounts || { buyer: 0, seller: 0 };
   contract.disputeOpenedBy = actorContext.actorId || actorRole || 'client';
   contract.disputeDeadline = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
   if (reason) contract.disputeReason = reason;
@@ -1405,7 +1407,12 @@ export function openDisputeWithEvidence(state, contractId, actorContext = {}, re
 
 export function resolveDisputeByArbiter(state, contractId, resolution, customBuyerPercent = 35, actorContext = {}) {
   const contract = state.contracts.find((c) => c.id === contractId);
-  const isDisputedOrFrozen = contract && (contract.status === 'DISPUTED' || contract.status === 'FROZEN' || contract.isFrozen);
+  const isDisputedOrFrozen =
+    contract &&
+    (contract.status === 'DISPUTED' ||
+      contract.status === 'FROZEN' ||
+      contract.status === 'APPEALED' ||
+      contract.isFrozen);
   if (!isDisputedOrFrozen) {
     return { ok: false, error: 'Hợp đồng không tồn tại hoặc không ở trạng thái tranh chấp.' };
   }
@@ -1426,8 +1433,46 @@ export function resolveDisputeByArbiter(state, contractId, resolution, customBuy
     return { ok: false, error: sigCheck.error };
   }
 
+  let buyerPct = 35;
+  if (resolution === 'RELEASE_FREELANCER') {
+    buyerPct = 0;
+  } else if (resolution === 'REFUND_CLIENT') {
+    buyerPct = 100;
+  } else if (resolution === 'SPLIT_50_50') {
+    buyerPct = 50;
+  } else if (resolution === 'CUSTOM_SPLIT') {
+    buyerPct = Math.min(100, Math.max(0, Number(customBuyerPercent ?? 35)));
+  } else {
+    return { ok: false, error: 'Phán quyết không hợp lệ.' };
+  }
+  const sellerPct = 100 - buyerPct;
+
+  const bailiffFallback = runFactFindingBailiffAgent(contract);
+  const recommendedBuyerPct =
+    typeof contract.agentRecommendation?.buyerPct === 'number'
+      ? contract.agentRecommendation.buyerPct
+      : typeof contract.recommendedBuyerPercent === 'number'
+      ? contract.recommendedBuyerPercent
+      : bailiffFallback.recommendedBuyerPercent;
+
+  const isDeviation = buyerPct !== recommendedBuyerPct;
+  const rawJustification = String(actorContext.arbiterJustification || '').trim();
+  const isKeepOriginal = Boolean(actorContext.keepOriginal);
+  if (actorContext.requireJustification && isDeviation && !isKeepOriginal && rawJustification.length < 20) {
+    return {
+      ok: false,
+      statusCode: 400,
+      error: 'Phán quyết lệch với đề xuất của AI Agent bắt buộc phải nhập lý do giải trình (tối thiểu 20 ký tự).'
+    };
+  }
+  const arbiterJustification = rawJustification
+    ? escapeHtml(rawJustification)
+    : isKeepOriginal
+    ? escapeHtml(String(contract.disputeResolution?.arbiterJustification || 'Giữ nguyên tỷ lệ cũ sau khi tái thẩm.'))
+    : '';
+
   const grossAmount = contract.amount;
-  const isFullRefund = resolution === 'REFUND_CLIENT';
+  const isFullRefund = resolution === 'REFUND_CLIENT' || buyerPct === 100;
   const feeInfo = isFullRefund
     ? { gross: grossAmount, takeRateFee: 0, gatewayOrGasFee: 0, totalFee: 0, netPayout: grossAmount }
     : calculateFeeBreakdown(grossAmount, 'Arbitration Settlement', 'VND', contract.feePayer || 'FREELANCER');
@@ -1437,33 +1482,113 @@ export function resolveDisputeByArbiter(state, contractId, resolution, customBuy
   let detailText = '';
 
   if (resolution === 'RELEASE_FREELANCER') {
+    sellerShare = distributable;
+    detailText = `Arbiter giải ngân 100% [${contract.id}] cho ${contract.freelancer} (Net: ${formatVND(sellerShare)})`;
+  } else if (resolution === 'REFUND_CLIENT') {
+    buyerShare = grossAmount;
+    detailText = `Arbiter hoàn trả 100% [${contract.id}] về ví Client không trừ phí (${formatVND(buyerShare)})`;
+  } else if (resolution === 'SPLIT_50_50') {
+    buyerShare = Math.floor(distributable / 2);
+    sellerShare = distributable - buyerShare;
+    detailText = `Arbiter chia 50/50 [${contract.id}]: Buyer ${formatVND(buyerShare)} • Seller ${formatVND(sellerShare)}`;
+  } else {
+    buyerShare = Math.round(distributable * (buyerPct / 100));
+    sellerShare = distributable - buyerShare;
+    detailText = `Arbiter phê duyệt chia ${sellerPct}% Freelancer (${formatVND(sellerShare)}) / ${buyerPct}% Client (${formatVND(buyerShare)}) cho [${contract.id}]`;
+  }
+
+  const resolvedAt = new Date().toISOString();
+  const prevStatus = contract.status;
+  contract.disputeResolution = {
+    resolution,
+    buyerPct,
+    sellerPct,
+    recommendedBuyerPct,
+    isDeviation,
+    arbiterJustification,
+    resolvedBy: actorId || actorRole || 'arbiter',
+    resolvedAt,
+    buyerAmount: buyerShare,
+    sellerAmount: sellerShare,
+    buyerShare,
+    sellerShare,
+    grossAmount,
+    feeInfo,
+    status: actorContext.enterAppealWindow ? 'AWAITING_CONFIRMATION' : 'COMPLETED'
+  };
+
+  const proof = computeProofHashAndCid(`${contract.id}-${resolution}-${buyerShare}-${sellerShare}`);
+
+  if (actorContext.enterAppealWindow) {
+    contract.resolutionAccepted = { buyer: false, seller: false };
+    contract.appealCounts = contract.appealCounts || { buyer: 0, seller: 0 };
+    contract.status = 'AWAITING_CONFIRMATION';
+    contract.isFrozen = true;
+    contract.vaultFrozen = true;
+    contract.timelockPaused = true;
+    contract.timelockRemaining = '⏳ Chờ xác nhận từ Client & Freelancer';
+    const reReviewPrefix = prevStatus === 'APPEALED' ? (isKeepOriginal ? '[Tái thẩm — Giữ nguyên tỷ lệ cũ] ' : '[Tái thẩm — Chia lại tỷ lệ mới] ') : '';
+    contract.lastStatusChange = {
+      fromStatus: prevStatus,
+      toStatus: 'AWAITING_CONFIRMATION',
+      message: `${reReviewPrefix}Trọng tài đã ra phán quyết chia ${buyerPct}% Client / ${sellerPct}% Freelancer. Trạng thái chuyển sang Chờ xác nhận.`,
+      updatedAt: resolvedAt,
+      actorRole: 'arbiter'
+    };
+    contract.appealWindow = {
+      openedAt: resolvedAt,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      resolution,
+      buyerPct,
+      sellerPct,
+      buyerShare,
+      sellerShare,
+      grossAmount,
+      feeInfo,
+      isDeviation,
+      arbiterJustification
+    };
+    state.ledger.unshift({
+      id: `EV-${Math.floor(1000 + Math.random() * 9000)}`,
+      contractId: contract.id,
+      time: new Date().toLocaleTimeString('vi-VN'),
+      role: 'ARBITER',
+      type: prevStatus === 'APPEALED' ? 'Phán quyết Tái thẩm Trọng tài' : 'Phán quyết Trọng tài (Chờ xác nhận)',
+      detail: `${reReviewPrefix}${detailText}${isDeviation ? ` • [Lệch AI] Giải trình: ${arbiterJustification}` : ' • [Theo đề xuất AI]'}`,
+      amount: grossAmount,
+      auditHash: proof.auditHash
+    });
+
+    // Tự động hoàn tất nếu cả hai bên đều đã hết lượt khiếu nại khi Trọng tài tái thẩm
+    if (prevStatus === 'APPEALED' && contract.appealCounts.buyer >= 1 && contract.appealCounts.seller >= 1) {
+      return finalizeDisputeResolution(state, contract.id, { role: 'system', auto: true });
+    }
+
+    return {
+      ok: true,
+      contract,
+      buyerShare,
+      sellerShare,
+      feeInfo,
+      detailText,
+      isDeviation,
+      arbiterJustification,
+      appealWindow: contract.appealWindow
+    };
+  }
+
+  if (resolution === 'RELEASE_FREELANCER') {
     contract.status = 'COMPLETED';
     contract.isFrozen = false;
     contract.vaultFrozen = false;
     contract.timelockPaused = false;
-    sellerShare = distributable;
-    detailText = `Arbiter giải ngân 100% [${contract.id}] cho ${contract.freelancer} (Net: ${formatVND(sellerShare)})`;
   } else if (resolution === 'REFUND_CLIENT') {
     contract.status = 'REFUNDED';
     contract.isFrozen = false;
     contract.vaultFrozen = false;
     contract.timelockPaused = false;
-    buyerShare = grossAmount;
-    detailText = `Arbiter hoàn trả 100% [${contract.id}] về ví Client không trừ phí (${formatVND(buyerShare)})`;
-  } else if (resolution === 'SPLIT_50_50') {
-    contract.status = 'SPLIT';
-    buyerShare = Math.floor(distributable / 2);
-    sellerShare = distributable - buyerShare;
-    detailText = `Arbiter chia 50/50 [${contract.id}]: Buyer ${formatVND(buyerShare)} • Seller ${formatVND(sellerShare)}`;
-  } else if (resolution === 'CUSTOM_SPLIT') {
-    const bPct = Math.min(100, Math.max(0, Number(customBuyerPercent ?? 35)));
-    const sPct = 100 - bPct;
-    contract.status = 'SPLIT';
-    buyerShare = Math.round(distributable * (bPct / 100));
-    sellerShare = distributable - buyerShare;
-    detailText = `Arbiter phê duyệt chia ${sPct}% Freelancer (${formatVND(sellerShare)}) / ${bPct}% Client (${formatVND(buyerShare)}) cho [${contract.id}]`;
   } else {
-    return { ok: false, error: 'Phán quyết không hợp lệ.' };
+    contract.status = 'SPLIT';
   }
 
   contract.amount = 0;
@@ -1476,19 +1601,323 @@ export function resolveDisputeByArbiter(state, contractId, resolution, customBuy
   state.platformFeesCollected += feeInfo.totalFee;
   state.reputation.arbiter.disputesCount += 1;
 
-  const proof = computeProofHashAndCid(`${contract.id}-${resolution}-${buyerShare}-${sellerShare}`);
   state.ledger.unshift({
     id: `EV-${Math.floor(1000 + Math.random() * 9000)}`,
     contractId: contract.id,
     time: new Date().toLocaleTimeString('vi-VN'),
     role: 'ARBITER',
     type: 'Phán quyết Trọng tài',
-    detail: detailText,
+    detail: `${detailText}${isDeviation && arbiterJustification ? ` • Giải trình: ${arbiterJustification}` : ''}`,
     amount: grossAmount,
     auditHash: proof.auditHash
   });
 
-  return { ok: true, contract, buyerShare, sellerShare, feeInfo, detailText };
+  return { ok: true, contract, buyerShare, sellerShare, feeInfo, detailText, isDeviation, arbiterJustification };
+}
+
+export function ensureContractDisputeResolution(contract) {
+  if (!contract) return null;
+  const fallbackObj =
+    contract.disputeResolution ||
+    contract.arbiterDecision ||
+    (contract.resolution && typeof contract.resolution === 'object' ? contract.resolution : null) ||
+    contract.splitRatio ||
+    contract.appealWindow;
+
+  const hasRulingSignal =
+    Boolean(fallbackObj) ||
+    contract.status === 'AWAITING_CONFIRMATION' ||
+    contract.status === 'APPEAL_WINDOW' ||
+    contract.signatures?.arbiter === true;
+
+  if (!hasRulingSignal) return null;
+
+  const grossAmount = Number(fallbackObj?.grossAmount ?? contract.amount ?? 0);
+  const buyerPct = Math.min(
+    100,
+    Math.max(
+      0,
+      Number(
+        fallbackObj?.buyerPct ??
+          fallbackObj?.clientPercent ??
+          contract.recommendedBuyerPercent ??
+          contract.agentRecommendation?.buyerPct ??
+          35
+      )
+    )
+  );
+  const sellerPct = 100 - buyerPct;
+  const feeInfo =
+    fallbackObj?.feeInfo ||
+    (buyerPct === 100
+      ? { gross: grossAmount, takeRateFee: 0, gatewayOrGasFee: 0, totalFee: 0, netPayout: grossAmount }
+      : calculateFeeBreakdown(grossAmount, 'Arbitration Settlement', 'VND', contract.feePayer || 'FREELANCER'));
+  const distributable = Number(feeInfo.netPayout ?? grossAmount);
+  const buyerShare =
+    typeof fallbackObj?.buyerShare === 'number'
+      ? fallbackObj.buyerShare
+      : Math.round(distributable * (buyerPct / 100));
+  const sellerShare =
+    typeof fallbackObj?.sellerShare === 'number'
+      ? fallbackObj.sellerShare
+      : Math.max(0, distributable - buyerShare);
+
+  const normalized = {
+    resolution: fallbackObj?.resolution || (buyerPct === 100 ? 'REFUND_CLIENT' : buyerPct === 0 ? 'RELEASE_FREELANCER' : 'CUSTOM_SPLIT'),
+    buyerPct,
+    sellerPct,
+    buyerAmount: buyerShare,
+    sellerAmount: sellerShare,
+    buyerShare,
+    sellerShare,
+    grossAmount,
+    feeInfo,
+    recommendedBuyerPct: Number(fallbackObj?.recommendedBuyerPct ?? contract.recommendedBuyerPercent ?? buyerPct),
+    isDeviation: Boolean(fallbackObj?.isDeviation),
+    arbiterJustification: fallbackObj?.arbiterJustification || '',
+    resolvedBy: fallbackObj?.resolvedBy || 'arbiter',
+    resolvedAt: fallbackObj?.resolvedAt || new Date().toISOString(),
+    status: contract.status === 'COMPLETED' ? 'COMPLETED' : 'AWAITING_CONFIRMATION'
+  };
+
+  contract.disputeResolution = normalized;
+  if (!contract.appealWindow) {
+    contract.appealWindow = {
+      openedAt: normalized.resolvedAt,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      ...normalized
+    };
+  }
+  return contract.disputeResolution;
+}
+
+export function normalizeAwaitingConfirmationStatus(contract) {
+  if (!contract) return contract;
+  ensureContractDisputeResolution(contract);
+  const terminalOrActiveAppeal = [
+    'COMPLETED',
+    'REFUNDED',
+    'RELEASED',
+    'SPLIT',
+    'APPEALED',
+    'APPEALED_ESCALATED',
+    'AWAITING_CONFIRMATION',
+    'APPEAL_WINDOW'
+  ];
+  if (
+    contract.status !== 'COMPLETED' &&
+    (Boolean(contract.disputeResolution) || contract.signatures?.arbiter === true) &&
+    !terminalOrActiveAppeal.includes(contract.status)
+  ) {
+    contract.status = 'AWAITING_CONFIRMATION';
+  }
+  return contract;
+}
+
+export function submitDisputeAppeal(state, contractId, actorContext = {}, appealPayload = {}) {
+  const contract = state.contracts.find((c) => c.id === contractId);
+  if (!contract) return { ok: false, statusCode: 404, error: 'Không tìm thấy hợp đồng.' };
+  normalizeAwaitingConfirmationStatus(contract);
+  const allowedStatuses = ['AWAITING_CONFIRMATION', 'APPEAL_WINDOW', 'DISPUTED'];
+  const hasArbiterRuling =
+    contract.status !== 'COMPLETED' &&
+    (Boolean(contract.disputeResolution) || contract.signatures?.arbiter === true);
+  if (hasArbiterRuling && !allowedStatuses.includes(contract.status)) {
+    contract.status = 'AWAITING_CONFIRMATION';
+  }
+  if (!allowedStatuses.includes(contract.status) && !hasArbiterRuling) {
+    return {
+      ok: false,
+      statusCode: 400,
+      error: `Hợp đồng đang ở trạng thái ${contract.status}, không thể gửi khiếu nại.`
+    };
+  }
+  const rawRole = String(actorContext.role || '').toLowerCase();
+  const normalizedRole =
+    rawRole === 'buyer' ? 'client' : rawRole === 'seller' ? 'freelancer' : rawRole;
+  if (normalizedRole === 'arbiter' || (normalizedRole !== 'client' && normalizedRole !== 'freelancer')) {
+    return { ok: false, statusCode: 403, error: 'Chỉ Client (Buyer) hoặc Freelancer (Seller) mới có quyền gửi khiếu nại phán quyết.' };
+  }
+  const sideKey = normalizedRole === 'client' ? 'buyer' : 'seller';
+  contract.appealCounts = contract.appealCounts || { buyer: 0, seller: 0 };
+  if ((contract.appealCounts[sideKey] || 0) >= 1) {
+    return {
+      ok: false,
+      statusCode: 400,
+      error: 'Bạn đã sử dụng hết quyền khiếu nại (tối đa 1 lần cho mỗi bên).'
+    };
+  }
+  const rawReason = String(appealPayload.reason || appealPayload.message || appealPayload.note || '').trim();
+  if (!rawReason) {
+    return { ok: false, statusCode: 400, error: 'Vui lòng nhập lý do khiếu nại phán quyết Trọng tài.' };
+  }
+  const sanitizedReason = escapeHtml(rawReason);
+  const sanitizedEvidence = escapeHtml(String(appealPayload.evidence || '').trim());
+  const submittedAt = new Date().toISOString();
+  const prevStatus = contract.status;
+
+  contract.appealCounts[sideKey] = 1;
+  contract.status = 'APPEALED';
+  contract.isFrozen = true;
+  contract.vaultFrozen = true;
+  contract.timelockPaused = true;
+  contract.timelockRemaining = '⚖️ Đang khiếu nại (Chờ Trọng tài xử lý)';
+  const appealEntry = {
+    appellantRole: normalizedRole,
+    appealedBy: actorContext.actorId || normalizedRole.toUpperCase(),
+    actorRole: normalizedRole,
+    reason: sanitizedReason,
+    evidence: sanitizedEvidence,
+    submittedAt,
+    appealedAt: submittedAt
+  };
+  if (!Array.isArray(contract.appeals)) contract.appeals = [];
+  contract.appeals.unshift(appealEntry);
+  contract.appeal = appealEntry;
+  contract.lastStatusChange = {
+    fromStatus: prevStatus,
+    toStatus: 'APPEALED',
+    message: `${normalizedRole === 'client' ? 'Client' : 'Freelancer'} đã gửi khiếu nại tới Trọng tài: "${sanitizedReason}"`,
+    updatedAt: submittedAt,
+    actorRole: normalizedRole
+  };
+
+  const proof = computeProofHashAndCid(`${contract.id}-appeal-${normalizedRole}-${Date.now()}`);
+  state.ledger.unshift({
+    id: `EV-${Math.floor(1000 + Math.random() * 9000)}`,
+    contractId: contract.id,
+    time: new Date().toLocaleTimeString('vi-VN'),
+    role: normalizedRole.toUpperCase(),
+    type: 'Khiếu nại Phán quyết Trọng tài',
+    detail: `[${contract.id}] ${normalizedRole.toUpperCase()} gửi khiếu nại tới Trọng tài: "${sanitizedReason}"${sanitizedEvidence ? ` • Bằng chứng: ${sanitizedEvidence}` : ''}`,
+    amount: contract.amount,
+    auditHash: proof.auditHash
+  });
+
+  return { ok: true, contract, appeal: appealEntry, appeals: contract.appeals };
+}
+
+export function agreeDisputeResolution(state, contractId, actorContext = {}) {
+  const contract = state.contracts.find((c) => c.id === contractId);
+  if (!contract) return { ok: false, statusCode: 404, error: 'Không tìm thấy hợp đồng.' };
+  if (contract.status === 'COMPLETED') {
+    return { ok: false, statusCode: 400, error: 'Hợp đồng đã hoàn tất giải ngân.' };
+  }
+  normalizeAwaitingConfirmationStatus(contract);
+  const hasArbiterRuling =
+    contract.status !== 'COMPLETED' &&
+    (Boolean(contract.disputeResolution) || contract.signatures?.arbiter === true);
+  if (hasArbiterRuling && contract.status !== 'AWAITING_CONFIRMATION' && contract.status !== 'APPEAL_WINDOW') {
+    contract.status = 'AWAITING_CONFIRMATION';
+  }
+  if (contract.status !== 'AWAITING_CONFIRMATION' && contract.status !== 'APPEAL_WINDOW' && !hasArbiterRuling) {
+    return { ok: false, statusCode: 400, error: 'Hợp đồng chưa có phán quyết từ Trọng tài để xác nhận.' };
+  }
+  const rawRole = String(actorContext.role || '').toLowerCase();
+  const normalizedRole = rawRole === 'buyer' ? 'client' : rawRole === 'seller' ? 'freelancer' : rawRole;
+  if (normalizedRole !== 'client' && normalizedRole !== 'freelancer') {
+    return { ok: false, statusCode: 403, error: 'Chỉ Client hoặc Freelancer mới có thể bấm Đồng ý phán quyết.' };
+  }
+  const sideKey = normalizedRole === 'client' ? 'buyer' : 'seller';
+  const otherSideKey = sideKey === 'buyer' ? 'seller' : 'buyer';
+
+  contract.resolutionAccepted = contract.resolutionAccepted || { buyer: false, seller: false };
+  contract.resolutionAccepted[sideKey] = true;
+  contract.signatures = contract.signatures || {};
+  contract.signatures[normalizedRole] = true;
+  contract.signatures[sideKey] = true;
+
+  const acceptedAt = new Date().toISOString();
+  contract.lastStatusChange = {
+    fromStatus: contract.status,
+    toStatus: contract.status,
+    message: `${normalizedRole === 'client' ? 'Client (Buyer)' : 'Freelancer (Seller)'} đã bấm Đồng ý phán quyết Trọng tài.`,
+    updatedAt: acceptedAt,
+    actorRole: normalizedRole
+  };
+
+  contract.appealCounts = contract.appealCounts || { buyer: 0, seller: 0 };
+  const bothAgreed = Boolean(contract.resolutionAccepted.buyer && contract.resolutionAccepted.seller);
+  const oneAgreedAndOtherExhausted = Boolean(
+    contract.signatures?.arbiter &&
+      contract.resolutionAccepted[sideKey] &&
+      (contract.appealCounts[otherSideKey] || 0) >= 1
+  );
+
+  if (bothAgreed || oneAgreedAndOtherExhausted) {
+    const fin = finalizeDisputeResolution(state, contract.id, { role: 'system', auto: true });
+    return { ...fin, autoFinalized: true };
+  }
+
+  return { ok: true, contract, autoFinalized: false };
+}
+
+export function finalizeDisputeResolution(state, contractId, actorContext = {}) {
+  const actorRole = String(actorContext.role || '').toLowerCase();
+  if (actorRole && actorRole !== 'arbiter' && actorRole !== 'system') {
+    return {
+      ok: false,
+      statusCode: 403,
+      error: 'Chỉ hệ thống tự động (hoặc Trọng tài) mới có quyền hoàn tất giải ngân phán quyết.'
+    };
+  }
+  const contract = state.contracts.find((c) => c.id === contractId);
+  if (!contract) return { ok: false, statusCode: 404, error: 'Không tìm thấy hợp đồng.' };
+  if (contract.status === 'COMPLETED') {
+    return { ok: false, statusCode: 400, error: 'Hợp đồng đã hoàn tất giải ngân.' };
+  }
+  if (contract.status === 'APPEALED' || contract.status === 'APPEALED_ESCALATED') {
+    return { ok: false, statusCode: 400, error: 'Hợp đồng đang có khiếu nại chờ Trọng tài xử lý.' };
+  }
+  const aw = ensureContractDisputeResolution(contract) || contract.appealWindow || contract.disputeResolution;
+  if (!aw) {
+    return { ok: false, statusCode: 400, error: 'Hợp đồng chưa có phán quyết Trọng tài để tất toán.' };
+  }
+  const buyerShare = Number(aw.buyerShare || 0);
+  const sellerShare = Number(aw.sellerShare || 0);
+  const grossAmount = Number(aw.grossAmount ?? contract.amount);
+  const totalFee = Number(aw.feeInfo?.totalFee || 0);
+  const prevStatus = contract.status;
+  const finalizedAt = new Date().toISOString();
+
+  contract.amount = 0;
+  contract.status = 'COMPLETED';
+  contract.isFrozen = false;
+  contract.vaultFrozen = false;
+  contract.timelockPaused = false;
+  contract.timelockRemaining = '✓ Đã chốt phán quyết & tất toán';
+  contract.failedStepText = null;
+  contract.aiRecommendation = null;
+  if (contract.disputeResolution) {
+    contract.disputeResolution.status = 'COMPLETED';
+    contract.disputeResolution.finalizedAt = finalizedAt;
+  }
+  contract.lastStatusChange = {
+    fromStatus: prevStatus,
+    toStatus: 'COMPLETED',
+    message: `Trọng tài đã chốt phán quyết cuối cùng: hoàn ${formatVND(buyerShare)} cho Client và giải ngân ${formatVND(sellerShare)} cho Freelancer.`,
+    updatedAt: finalizedAt,
+    actorRole: 'arbiter'
+  };
+
+  state.clientBalance += buyerShare;
+  state.freelancerBalance += sellerShare;
+  state.platformFeesCollected += totalFee;
+  state.reputation.arbiter.disputesCount += 1;
+
+  const proof = computeProofHashAndCid(`${contract.id}-finalize-${buyerShare}-${sellerShare}`);
+  state.ledger.unshift({
+    id: `EV-${Math.floor(1000 + Math.random() * 9000)}`,
+    contractId: contract.id,
+    time: new Date().toLocaleTimeString('vi-VN'),
+    role: 'ARBITER',
+    type: 'Tự động hoàn tất giải ngân phán quyết',
+    detail: `Hoàn tất chia tiền [${contract.id}]: Client ${formatVND(buyerShare)} (${aw.buyerPct}%) • Freelancer ${formatVND(sellerShare)} (${aw.sellerPct}%)`,
+    amount: grossAmount,
+    auditHash: proof.auditHash
+  });
+
+  return { ok: true, contract, buyerShare, sellerShare, feeInfo: aw.feeInfo };
 }
 
 /* ==========================================================================
@@ -1640,6 +2069,12 @@ export function initBrowserApp() {
       case 'DISPUTED':
       case 'FROZEN':
         return `<span class="pill pill-rose">❄️ Đã đóng băng quỹ (Chờ Trọng tài phân xử)</span>`;
+      case 'AWAITING_CONFIRMATION':
+      case 'APPEAL_WINDOW':
+        return `<span class="pill pill-amber">⏳ Chờ xác nhận</span>`;
+      case 'APPEALED':
+      case 'APPEALED_ESCALATED':
+        return `<span class="pill pill-rose">⚖️ Đang khiếu nại (Chờ Trọng tài xử lý)</span>`;
       case 'COMPLETED':
       case 'RELEASED':
       case 'AUTO_RELEASED':
@@ -1653,14 +2088,83 @@ export function initBrowserApp() {
     }
   }
 
+  function renderStatusChangeNotice(c) {
+    if (!c?.lastStatusChange) return '';
+    return `
+      <div class="status-change-notice" style="margin-top:0.45rem;padding:0.45rem 0.65rem;background:#EFF6FF;border:1px solid #BFDBFE;border-left:4px solid #2563EB;border-radius:var(--radius-sm);font-size:0.75rem;color:#1E3A8A;">
+        <div style="display:flex;justify-content:space-between;gap:0.5rem;flex-wrap:wrap;font-weight:800;">
+          <span>🔔 Cập nhật trạng thái: ${escapeHtml(c.lastStatusChange.fromStatus || '')} → ${escapeHtml(c.lastStatusChange.toStatus || c.status)}</span>
+          <span style="font-weight:500;color:#475569;">${escapeHtml(c.lastStatusChange.updatedAt ? new Date(c.lastStatusChange.updatedAt).toLocaleTimeString('vi-VN') : '')}</span>
+        </div>
+        <div style="margin-top:0.15rem;color:#1E293B;">${escapeHtml(c.lastStatusChange.message || '')}</div>
+      </div>`;
+  }
+
+  function renderDisputeResolutionSummaryBox(c) {
+    const dr = c?.disputeResolution;
+    if (!dr) return '';
+    const buyerPct = Number(dr.buyerPct ?? 0);
+    const sellerPct = Number(dr.sellerPct ?? 100 - buyerPct);
+    const buyerAmount = Number(dr.buyerShare ?? 0);
+    const sellerAmount = Number(dr.sellerShare ?? 0);
+    const buyerAccepted = Boolean(c.resolutionAccepted?.buyer);
+    const sellerAccepted = Boolean(c.resolutionAccepted?.seller);
+    const buyerAppeals = Number(c.appealCounts?.buyer || 0);
+    const sellerAppeals = Number(c.appealCounts?.seller || 0);
+    const appealsList = Array.isArray(c.appeals) && c.appeals.length > 0 ? c.appeals : c.appeal ? [c.appeal] : [];
+
+    let statusPillHtml = '';
+    if (c.status === 'COMPLETED') {
+      statusPillHtml = `<span class="pill pill-emerald">✅ Đã hoàn tất giải ngân theo tỷ lệ này</span>`;
+    } else if (c.status === 'APPEALED' || c.status === 'APPEALED_ESCALATED') {
+      statusPillHtml = `<span class="pill pill-rose">⏳ Đã gửi khiếu nại — Đang chờ Trọng tài xem xét chia lại hoặc giữ nguyên tỷ lệ</span>`;
+    } else if (c.status === 'AWAITING_CONFIRMATION' || c.status === 'APPEAL_WINDOW') {
+      statusPillHtml = `<span class="pill pill-amber">⏳ Chờ xác nhận từ Client &amp; Freelancer</span>`;
+    }
+
+    return `
+      <div class="contract-subbox dispute-resolution-summary" style="margin-top:0.55rem;background:${c.status === 'APPEALED' || c.status === 'APPEALED_ESCALATED' ? '#FEF2F2' : c.status === 'COMPLETED' ? '#F0FDF4' : '#FFFBEB'};border:1px solid ${c.status === 'APPEALED' || c.status === 'APPEALED_ESCALATED' ? '#FECACA' : c.status === 'COMPLETED' ? '#86EFAC' : '#FCD34D'};font-size:0.77rem;">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.4rem;margin-bottom:0.3rem;">
+          <strong style="color:${c.status === 'COMPLETED' ? '#166534' : '#92400E'};">⚖️ Phán quyết Tỷ lệ Phân chia Hợp đồng</strong>
+          <div style="display:flex;gap:0.35rem;flex-wrap:wrap;align-items:center;">
+            <span class="pill ${dr.isDeviation ? 'pill-amber' : 'pill-emerald'}">${dr.isDeviation ? '⚠️ Lệch đề xuất AI Agent' : '✓ Theo đề xuất AI Agent'}</span>
+            ${statusPillHtml}
+          </div>
+        </div>
+        <div style="padding:0.4rem 0.55rem;background:#FFFFFF;border-radius:var(--radius-sm);border:1px solid #E2E8F0;margin-bottom:0.3rem;font-weight:700;color:#0F172A;">
+          Client được hoàn <span style="color:#2563EB;">${buyerPct}% (${formatVND(buyerAmount)})</span> | Freelancer nhận <span style="color:#059669;">${sellerPct}% (${formatVND(sellerAmount)})</span>
+        </div>
+        <div><strong>Giải trình Trọng tài:</strong> ${dr.arbiterJustification || 'Áp dụng đúng tỷ lệ đề xuất của AI Agent.'}</div>
+        <div style="margin-top:0.3rem;display:flex;gap:0.65rem;flex-wrap:wrap;font-size:0.73rem;color:#334155;">
+          <span><strong>Xác nhận:</strong> ${buyerAccepted ? '✓ Buyer' : '○ Buyer'} • ${sellerAccepted ? '✓ Seller' : '○ Seller'}</span>
+          <span><strong>Lượt khiếu nại đã dùng:</strong> Buyer ${buyerAppeals}/1 • Seller ${sellerAppeals}/1</span>
+        </div>
+        ${(c.status === 'APPEALED' || c.status === 'APPEALED_ESCALATED') && appealsList.length > 0 ? `
+          <div style="margin-top:0.45rem;padding:0.45rem 0.6rem;background:#FFFFFF;border:1px solid #FECACA;border-radius:var(--radius-sm);">
+            <div style="font-weight:800;color:#991B1B;margin-bottom:0.2rem;">🚨 Khiếu nại từ ${escapeHtml((appealsList[0].appellantRole || appealsList[0].appealedBy || '').toUpperCase())}:</div>
+            ${appealsList.map((ap) => `
+              <div style="padding:0.2rem 0;border-top:1px dashed #FECACA;">
+                <div><strong>Bên khiếu nại:</strong> ${escapeHtml((ap.appellantRole || ap.actorRole || '').toUpperCase())} • <strong>Lý do:</strong> ${ap.reason}</div>
+                ${ap.evidence ? `<div><strong>Bằng chứng bổ sung:</strong> ${ap.evidence}</div>` : ''}
+              </div>
+            `).join('')}
+          </div>
+        ` : ''}
+      </div>`;
+  }
+
   function renderMultiSigBar(c) {
-    const count = countMultiSignatures(c.signatures);
+    const isInArbitration = ['DISPUTED', 'FROZEN', 'AWAITING_CONFIRMATION', 'APPEALED', 'APPEALED_ESCALATED'].includes(c.status);
+    const buyerSigned = isInArbitration ? Boolean(c.resolutionAccepted?.buyer) : Boolean(c.signatures?.client || c.signatures?.buyer);
+    const sellerSigned = isInArbitration ? Boolean(c.resolutionAccepted?.seller) : Boolean(c.signatures?.freelancer || c.signatures?.seller);
+    const arbiterSigned = Boolean(c.signatures?.arbiter);
+    const count = (buyerSigned ? 1 : 0) + (sellerSigned ? 1 : 0) + (arbiterSigned ? 1 : 0);
     return `
       <div class="multisig-row">
         <span style="font-size:0.68rem;font-weight:700;color:var(--text-secondary);">Multi-Sig (${count}/3):</span>
-        <span class="sig-chip ${c.signatures.client ? 'signed' : ''}">${c.signatures.client ? '✓' : '○'} Buyer</span>
-        <span class="sig-chip ${c.signatures.freelancer ? 'signed' : ''}">${c.signatures.freelancer ? '✓' : '○'} Seller</span>
-        <span class="sig-chip ${c.signatures.arbiter ? 'signed' : ''}">${c.signatures.arbiter ? '✓' : '○'} Arbiter</span>
+        <span class="sig-chip ${buyerSigned ? 'signed' : ''}">${buyerSigned ? '✓' : '○'} Buyer</span>
+        <span class="sig-chip ${sellerSigned ? 'signed' : ''}">${sellerSigned ? '✓' : '○'} Seller</span>
+        <span class="sig-chip ${arbiterSigned ? 'signed' : ''}">${arbiterSigned ? '✓' : '○'} Arbiter</span>
         <span class="sig-chip">${c.vaultAddress}</span>
       </div>`;
   }
@@ -1843,7 +2347,18 @@ export function initBrowserApp() {
     activePopupContractId = c.id;
 
     if (txModalIdEl) txModalIdEl.textContent = c.id;
-    const effectiveStatus = (c.isFrozen || c.vaultFrozen) && c.status !== 'RELEASED' && c.status !== 'COMPLETED' && c.status !== 'REFUNDED' && c.status !== 'SPLIT'
+    normalizeAwaitingConfirmationStatus(c);
+    const nonFrozenOverrideStatuses = [
+      'RELEASED',
+      'COMPLETED',
+      'REFUNDED',
+      'SPLIT',
+      'AWAITING_CONFIRMATION',
+      'APPEAL_WINDOW',
+      'APPEALED',
+      'APPEALED_ESCALATED'
+    ];
+    const effectiveStatus = (c.isFrozen || c.vaultFrozen) && !nonFrozenOverrideStatuses.includes(c.status)
       ? 'FROZEN'
       : c.status;
     if (txModalStatusBadgeEl) txModalStatusBadgeEl.innerHTML = getStatusBadgeHtml(effectiveStatus);
@@ -1901,6 +2416,10 @@ export function initBrowserApp() {
         }
       }
 
+      const statusChangeNoticeHtml =
+        isClientViewer || isFreelancerViewer ? renderStatusChangeNotice(c) : '';
+      const resolutionPanelHtml = renderDisputeResolutionSummaryBox(c);
+
       txModalOverviewEl.innerHTML = `
         <div class="contract-subbox" style="font-size:0.78rem;">
           <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.35rem;">
@@ -1920,6 +2439,8 @@ export function initBrowserApp() {
           ` : ''}
           ${renderAgentAlertIfFailed(c)}
         </div>
+        ${statusChangeNoticeHtml}
+        ${resolutionPanelHtml}
         ${deliveryPanelHtml}
         ${renderMilestonesMini(c)}
         ${renderMultiSigBar(c)}
@@ -1928,7 +2449,46 @@ export function initBrowserApp() {
 
     if (txModalRoleActionsEl) {
       if (currentLoginRole === 'client') {
-        const isFrozenOrDisputed = c.status === 'DISPUTED' || c.status === 'FROZEN' || Boolean(c.isFrozen) || Boolean(c.vaultFrozen);
+        if (c.status === 'AWAITING_CONFIRMATION' || c.status === 'APPEAL_WINDOW') {
+          const usedAppeal = (c.appealCounts?.buyer || 0) >= 1;
+          const alreadyAgreed = Boolean(c.resolutionAccepted?.buyer);
+          txModalRoleActionsEl.innerHTML = `
+            <div class="contract-actions">
+              <button type="button" class="btn btn-emerald btn-sm" data-popup-action="agree-resolution" data-id="${escapeHtml(c.id)}" ${alreadyAgreed ? 'disabled' : ''}>
+                ${alreadyAgreed ? '✓ Bạn đã đồng ý phán quyết' : '✓ Đồng ý phán quyết'}
+              </button>
+              ${
+                usedAppeal
+                  ? `<span class="pill pill-amber">Đã dùng lượt khiếu nại (1/1)</span>`
+                  : `<button type="button" class="btn btn-rose btn-sm" data-popup-action="open-appeal-form" data-id="${escapeHtml(c.id)}">
+                      ⚖️ Gửi khiếu nại tới Trọng tài
+                     </button>`
+              }
+            </div>
+            ${
+              usedAppeal
+                ? ''
+                : `<div id="tx-appeal-form-box" class="contract-subbox" style="margin-top:0.6rem;background:#FEF2F2;border:1px solid #FECACA;" hidden>
+                    <div style="font-weight:700;font-size:0.8rem;margin-bottom:0.35rem;color:#991B1B;">
+                      ⚖️ Gửi khiếu nại tới Trọng tài (Tối đa 1 lần)
+                    </div>
+                    <textarea id="tx-appeal-reason-input" class="form-input" rows="2" style="width:100%;font-size:0.8rem;margin-bottom:0.4rem;" placeholder="Nhập lý do khiếu nại chi tiết..."></textarea>
+                    <input type="text" id="tx-appeal-evidence-input" class="form-input" style="width:100%;font-size:0.8rem;margin-bottom:0.45rem;" placeholder="Link / mô tả bằng chứng bổ sung (tùy chọn)..." />
+                    <div style="display:flex;justify-content:flex-end;gap:0.45rem;">
+                      <button type="button" class="btn btn-secondary btn-xs" id="btn-cancel-appeal-form">Hủy</button>
+                      <button type="button" class="btn btn-rose btn-xs" id="btn-submit-appeal-form" data-id="${escapeHtml(c.id)}">
+                        ✓ Gửi khiếu nại tới Trọng tài
+                      </button>
+                    </div>
+                  </div>`
+            }`;
+        } else if (c.status === 'APPEALED' || c.status === 'APPEALED_ESCALATED') {
+          txModalRoleActionsEl.innerHTML = `
+            <div class="alert-box alert-warning" style="font-size:0.78rem;">
+              ⏳ Đã gửi khiếu nại — Đang chờ Trọng tài xem xét chia lại hoặc giữ nguyên tỷ lệ.
+            </div>`;
+        } else {
+        const isFrozenOrDisputed = c.status === 'DISPUTED' || c.status === 'FROZEN' || c.status === 'APPEALED' || c.status === 'APPEALED_ESCALATED' || Boolean(c.isFrozen) || Boolean(c.vaultFrozen);
         const canAct = c.amount > 0 && !isFrozenOrDisputed;
         const sellerSigned = Boolean(c.signatures?.freelancer || c.signatures?.seller);
         const releaseDisabledAttr = sellerSigned
@@ -1962,7 +2522,47 @@ export function initBrowserApp() {
                </div>
              </div>`
           : '';
+        }
       } else if (currentLoginRole === 'freelancer') {
+        if (c.status === 'AWAITING_CONFIRMATION' || c.status === 'APPEAL_WINDOW') {
+          const usedAppeal = (c.appealCounts?.seller || 0) >= 1;
+          const alreadyAgreed = Boolean(c.resolutionAccepted?.seller);
+          txModalRoleActionsEl.innerHTML = `
+            <div class="contract-actions">
+              <button type="button" class="btn btn-emerald btn-sm" data-popup-action="agree-resolution" data-id="${escapeHtml(c.id)}" ${alreadyAgreed ? 'disabled' : ''}>
+                ${alreadyAgreed ? '✓ Bạn đã đồng ý phán quyết' : '✓ Đồng ý phán quyết'}
+              </button>
+              ${
+                usedAppeal
+                  ? `<span class="pill pill-amber">Đã dùng lượt khiếu nại (1/1)</span>`
+                  : `<button type="button" class="btn btn-rose btn-sm" data-popup-action="open-appeal-form" data-id="${escapeHtml(c.id)}">
+                      ⚖️ Gửi khiếu nại tới Trọng tài
+                     </button>`
+              }
+            </div>
+            ${
+              usedAppeal
+                ? ''
+                : `<div id="tx-appeal-form-box" class="contract-subbox" style="margin-top:0.6rem;background:#FEF2F2;border:1px solid #FECACA;" hidden>
+                    <div style="font-weight:700;font-size:0.8rem;margin-bottom:0.35rem;color:#991B1B;">
+                      ⚖️ Gửi khiếu nại tới Trọng tài (Tối đa 1 lần)
+                    </div>
+                    <textarea id="tx-appeal-reason-input" class="form-input" rows="2" style="width:100%;font-size:0.8rem;margin-bottom:0.4rem;" placeholder="Nhập lý do khiếu nại chi tiết..."></textarea>
+                    <input type="text" id="tx-appeal-evidence-input" class="form-input" style="width:100%;font-size:0.8rem;margin-bottom:0.45rem;" placeholder="Link / mô tả bằng chứng bổ sung (tùy chọn)..." />
+                    <div style="display:flex;justify-content:flex-end;gap:0.45rem;">
+                      <button type="button" class="btn btn-secondary btn-xs" id="btn-cancel-appeal-form">Hủy</button>
+                      <button type="button" class="btn btn-rose btn-xs" id="btn-submit-appeal-form" data-id="${escapeHtml(c.id)}">
+                        ✓ Gửi khiếu nại tới Trọng tài
+                      </button>
+                    </div>
+                  </div>`
+            }`;
+        } else if (c.status === 'APPEALED' || c.status === 'APPEALED_ESCALATED') {
+          txModalRoleActionsEl.innerHTML = `
+            <div class="alert-box alert-warning" style="font-size:0.78rem;">
+              ⏳ Đã gửi khiếu nại — Đang chờ Trọng tài xem xét chia lại hoặc giữ nguyên tỷ lệ.
+            </div>`;
+        } else {
         const revisionBanner = c.clientRevisionComment && c.status === 'REVISION_REQUESTED' ? `
           <div class="alert-box alert-warning" style="margin-bottom:0.65rem;border-left:4px solid #D97706;">
             <div style="font-weight:800;color:#92400E;display:flex;align-items:center;gap:0.35rem;">
@@ -1988,47 +2588,75 @@ export function initBrowserApp() {
                 : ''
             }
             ${
-              c.amount > 0 && c.status !== 'DISPUTED'
+              c.amount > 0 && c.status !== 'DISPUTED' && c.status !== 'APPEALED_ESCALATED'
                 ? `<button type="button" class="btn btn-rose btn-sm" data-popup-action="open-dispute" data-id="${c.id}">
                     ❄️ Mở Tranh chấp & Đóng băng Quỹ
                    </button>`
                 : ''
             }
           </div>`;
+        }
       } else {
         const bailiff =
           typeof c.recommendedBuyerPercent === 'number' && typeof c.recommendedSellerPercent === 'number'
             ? { recommendedBuyerPercent: c.recommendedBuyerPercent, recommendedSellerPercent: c.recommendedSellerPercent }
             : runFactFindingBailiffAgent(c);
-        const recBuyer = bailiff.recommendedBuyerPercent;
-        const recSeller = bailiff.recommendedSellerPercent;
+        const recBuyer = typeof c.agentRecommendation?.buyerPct === 'number' ? c.agentRecommendation.buyerPct : bailiff.recommendedBuyerPercent;
+        const recSeller = 100 - recBuyer;
+        if (c.status === 'AWAITING_CONFIRMATION' || c.status === 'APPEAL_WINDOW') {
+          txModalRoleActionsEl.innerHTML = `
+            <div class="alert-box alert-info" style="font-size:0.78rem;">
+              ⏳ Đã ra phán quyết (${c.disputeResolution?.buyerPct ?? recBuyer}% Client / ${c.disputeResolution?.sellerPct ?? recSeller}% Freelancer). Hệ thống đang chờ Client &amp; Freelancer xác nhận hoặc khiếu nại và sẽ <strong>tự động giải ngân</strong> ngay khi đủ điều kiện.
+            </div>`;
+        } else {
+        const isAppealed = c.status === 'APPEALED';
+        const prevBuyerPct = c.disputeResolution?.buyerPct ?? recBuyer;
         txModalRoleActionsEl.innerHTML =
-          (c.status === 'DISPUTED' || c.status === 'FROZEN' || c.isFrozen) && c.amount > 0
+          (c.status === 'DISPUTED' || c.status === 'FROZEN' || isAppealed || c.isFrozen) && c.status !== 'APPEALED_ESCALATED' && c.amount > 0
             ? `<div class="split-slider-box">
                 <div style="display:flex;justify-content:space-between;font-size:0.76rem;font-weight:700;margin-bottom:0.3rem;">
-                  <span>⚖️ Phán quyết Trọng tài:</span>
-                  <span id="popup-split-label">Hoàn ${recBuyer}% Client / Giải ngân ${recSeller}% Freelancer</span>
+                  <span>${isAppealed ? '⚖️ Tái thẩm Khiếu nại (Trọng tài):' : '⚖️ Phán quyết Trọng tài:'}</span>
+                  <span id="popup-split-label">Hoàn ${isAppealed ? prevBuyerPct : recBuyer}% Client / Giải ngân ${100 - (isAppealed ? prevBuyerPct : recBuyer)}% Freelancer</span>
                 </div>
-                <input type="range" min="0" max="100" step="5" value="${recBuyer}" id="popup-split-slider" style="width:100%;margin-bottom:0.45rem;" />
+                <input type="range" min="0" max="100" step="5" value="${isAppealed ? prevBuyerPct : recBuyer}" id="popup-split-slider" data-rec-buyer-percent="${recBuyer}" style="width:100%;margin-bottom:0.45rem;" />
+                <div id="arbiter-deviation-box" class="contract-subbox" style="margin-bottom:0.55rem;background:#FFF7ED;border:1px solid #FB923C;border-left:4px solid #EA580C;" ${isAppealed || recBuyer === prevBuyerPct ? 'hidden' : ''}>
+                  <div style="font-size:0.78rem;font-weight:800;color:#9A3412;margin-bottom:0.3rem;">
+                    ⚠️ Cảnh báo: Tỷ lệ đang chọn lệch với đề xuất của AI Agent (${recBuyer}% Client / ${recSeller}% Freelancer)
+                  </div>
+                  <label class="form-label" for="arbiter-justification-input" style="font-size:0.76rem;color:#7C2D12;font-weight:700;">
+                    📝 Lý do giải trình / Phản hồi khiếu nại (Bắt buộc nếu lệch AI)
+                  </label>
+                  <textarea id="arbiter-justification-input" class="form-input" rows="2" style="width:100%;font-size:0.78rem;" placeholder="Nhập lý do giải trình tối thiểu 20 ký tự..."></textarea>
+                </div>
                 <div class="contract-actions">
-                  <button type="button" class="btn btn-purple btn-sm" data-popup-action="arbiter-ai-bailiff" data-id="${c.id}" data-buyer-percent="${recBuyer}">
-                    ✓ Duyệt Khuyến nghị (${recSeller}% Freelancer / ${recBuyer}% Client)
-                  </button>
-                  <button type="button" class="btn btn-secondary btn-sm" data-popup-action="arbiter-custom-split" data-id="${c.id}">
-                    ⚖️ Chia theo Thanh trượt
-                  </button>
-                  <button type="button" class="btn btn-emerald btn-sm" data-popup-action="arbiter-release" data-id="${c.id}">
-                    100% Seller
-                  </button>
-                  <button type="button" class="btn btn-rose btn-sm" data-popup-action="arbiter-refund" data-id="${c.id}">
-                    100% Buyer
-                  </button>
+                  ${
+                    isAppealed
+                      ? `<button type="button" class="btn btn-purple btn-sm" data-popup-action="arbiter-custom-split" data-id="${c.id}">
+                          ⚖️ Chia lại tỷ lệ mới
+                        </button>
+                        <button type="button" class="btn btn-secondary btn-sm" data-popup-action="arbiter-keep-original" data-id="${c.id}" data-buyer-percent="${prevBuyerPct}">
+                          🛡️ Giữ nguyên tỷ lệ cũ (${prevBuyerPct}% Client)
+                        </button>`
+                      : `<button type="button" class="btn btn-purple btn-sm" data-popup-action="arbiter-ai-bailiff" data-id="${c.id}" data-buyer-percent="${recBuyer}">
+                          ✓ Duyệt Khuyến nghị (${recSeller}% Freelancer / ${recBuyer}% Client)
+                        </button>
+                        <button type="button" class="btn btn-secondary btn-sm" data-popup-action="arbiter-custom-split" data-id="${c.id}">
+                          ⚖️ Chia theo Thanh trượt
+                        </button>
+                        <button type="button" class="btn btn-emerald btn-sm" data-popup-action="arbiter-release" data-id="${c.id}">
+                          100% Seller
+                        </button>
+                        <button type="button" class="btn btn-rose btn-sm" data-popup-action="arbiter-refund" data-id="${c.id}">
+                          100% Buyer
+                        </button>`
+                  }
                 </div>
                 <div style="font-size:0.72rem;color:var(--text-secondary);margin-top:0.4rem;">
-                  💡 Bấm phán quyết sẽ tự động đính kèm chữ ký số của Trọng tài (Arbiter) để hoàn tất điều kiện Multi-Sig 2-of-3.
+                  💡 Bấm phán quyết sẽ gắn chữ ký số Trọng tài (✓ Arbiter) và reset xác nhận của hai bên (○ Buyer, ○ Seller). Hệ thống tự động giải ngân khi đủ điều kiện.
                 </div>
                </div>`
             : '';
+        }
       }
     }
 
@@ -2137,6 +2765,8 @@ export function initBrowserApp() {
                 <div style="color:var(--text-primary);font-weight:700;margin-top:0.15rem;">"${c.clientRevisionComment}"</div>
               </div>
             ` : ''}
+            ${renderStatusChangeNotice(c)}
+            ${renderDisputeResolutionSummaryBox(c)}
             ${renderAgentAlertIfFailed(c)}
             ${renderMilestonesMini(c)}
             ${renderMultiSigBar(c)}
@@ -2206,6 +2836,8 @@ export function initBrowserApp() {
                 <div style="color:var(--text-primary);font-weight:700;margin-top:0.15rem;">"${c.clientRevisionComment}"</div>
               </div>
             ` : ''}
+            ${renderStatusChangeNotice(c)}
+            ${renderDisputeResolutionSummaryBox(c)}
             ${renderAgentAlertIfFailed(c)}
             ${renderMultiSigBar(c)}
           </div>`
@@ -3002,12 +3634,88 @@ export function initBrowserApp() {
   txModalRoleActionsEl?.addEventListener('input', (e) => {
     if (e.target.id === 'popup-split-slider') {
       const buyerPct = Number(e.target.value);
+      const recBuyer = Number(e.target.getAttribute('data-rec-buyer-percent') ?? buyerPct);
       const label = document.getElementById('popup-split-label');
       if (label) label.textContent = `Hoàn ${buyerPct}% Client / Giải ngân ${100 - buyerPct}% Freelancer`;
+      const devBox = document.getElementById('arbiter-deviation-box');
+      if (devBox) devBox.hidden = buyerPct === recBuyer;
     }
   });
 
   txModalRoleActionsEl?.addEventListener('click', async (e) => {
+    const cancelAppealBtn = e.target.closest('#btn-cancel-appeal-form');
+    if (cancelAppealBtn) {
+      const appealBox = document.getElementById('tx-appeal-form-box');
+      if (appealBox) appealBox.hidden = true;
+      return;
+    }
+    const submitAppealBtn = e.target.closest('#btn-submit-appeal-form');
+    if (submitAppealBtn) {
+      const targetCId = submitAppealBtn.getAttribute('data-id') || activePopupContractId;
+      const reasonInput = document.getElementById('tx-appeal-reason-input');
+      const evidenceInput = document.getElementById('tx-appeal-evidence-input');
+      const reason = (reasonInput?.value || '').trim();
+      const evidence = (evidenceInput?.value || '').trim();
+      if (!reason) {
+        alert('Vui lòng nhập lý do khiếu nại phán quyết.');
+        reasonInput?.focus();
+        return;
+      }
+      submitAppealBtn.disabled = true;
+      try {
+        let appealedViaApi = false;
+        if (typeof fetch === 'function') {
+          const sessionId =
+            (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('vibeescrow_session_id')) ||
+            (typeof localStorage !== 'undefined' && localStorage.getItem('vibeescrow_session_id')) ||
+            '';
+          const roleToken =
+            (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('vibeescrow_role_token')) ||
+            getStoredArbiterToken() ||
+            '';
+          const headers = {
+            'Content-Type': 'application/json',
+            'x-user-role': currentLoginRole || 'client'
+          };
+          if (sessionId) headers['x-session-id'] = sessionId;
+          if (roleToken) {
+            headers['x-role-token'] = roleToken;
+            headers.Authorization = `Bearer ${roleToken}`;
+          }
+          const resp = await fetch(`/api/contracts/${encodeURIComponent(targetCId)}/appeal`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              role: currentLoginRole || 'client',
+              reason,
+              message: reason,
+              note: reason,
+              evidence
+            })
+          });
+          const data = await resp.json().catch(() => ({}));
+          if (!resp.ok || !data.ok) {
+            alert(data.error || data.message || `Không thể gửi khiếu nại (HTTP ${resp.status}).`);
+            return;
+          }
+          if (data.contract) {
+            const idx = state.contracts.findIndex((item) => item.id === targetCId);
+            if (idx >= 0) state.contracts[idx] = { ...state.contracts[idx], ...data.contract };
+          }
+          appealedViaApi = true;
+        }
+        if (!appealedViaApi) {
+          const r = submitDisputeAppeal(state, targetCId, { role: currentLoginRole }, { reason, evidence });
+          if (!r.ok) { alert(r.error); return; }
+        }
+        await syncStateWithServer(true);
+        renderAllTransactionUI();
+        openTransactionPopup(targetCId);
+      } finally {
+        submitAppealBtn.disabled = false;
+      }
+      return;
+    }
     const cancelRevBtn = e.target.closest('#btn-cancel-revision-form');
     if (cancelRevBtn) {
       const revBox = document.getElementById('tx-revision-form-box');
@@ -3172,21 +3880,122 @@ export function initBrowserApp() {
       return;
     } else if (action === 'seller-sign') {
       contract.signatures.freelancer = true;
-    } else if (action === 'arbiter-ai-bailiff') {
-      const recBuyerPct = Number(btn.getAttribute('data-buyer-percent') ?? contract.recommendedBuyerPercent ?? 100);
-      const r = resolveDisputeByArbiter(state, cId, 'CUSTOM_SPLIT', recBuyerPct, { role: currentLoginRole, arbiterSigned: true });
-      if (!r.ok) { alert(r.error); return; }
-    } else if (action === 'arbiter-custom-split') {
+    } else if (action === 'open-appeal-form') {
+      const appealBox = document.getElementById('tx-appeal-form-box');
+      if (appealBox) appealBox.hidden = !appealBox.hidden;
+      return;
+    } else if (action === 'agree-resolution') {
+      let agreedViaApi = false;
+      try {
+        if (typeof fetch === 'function') {
+          const resp = await fetch(`/api/contracts/${encodeURIComponent(cId)}/agree-resolution`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-user-role': currentLoginRole || 'client' },
+            body: JSON.stringify({ role: currentLoginRole || 'client' })
+          });
+          const data = await resp.json().catch(() => ({}));
+          if (!resp.ok || !data.ok) {
+            alert(data.error || data.message || `Không thể xác nhận đồng ý (HTTP ${resp.status}).`);
+            return;
+          }
+          if (data.contract) {
+            const idx = state.contracts.findIndex((item) => item.id === cId);
+            if (idx >= 0) state.contracts[idx] = { ...state.contracts[idx], ...data.contract };
+          }
+          agreedViaApi = true;
+        }
+      } catch (err) {
+        console.warn('Agree resolution API fallback:', err?.message);
+      }
+      if (!agreedViaApi) {
+        const r = agreeDisputeResolution(state, cId, { role: currentLoginRole });
+        if (!r.ok) { alert(r.error); return; }
+      }
+      await syncStateWithServer(true);
+      renderAllTransactionUI();
+      openTransactionPopup(cId);
+      return;
+    } else if (
+      action === 'arbiter-ai-bailiff' ||
+      action === 'arbiter-custom-split' ||
+      action === 'arbiter-keep-original' ||
+      action === 'arbiter-release' ||
+      action === 'arbiter-refund'
+    ) {
       const slider = document.getElementById('popup-split-slider');
-      const pct = slider ? Number(slider.value) : 35;
-      const r = resolveDisputeByArbiter(state, cId, 'CUSTOM_SPLIT', pct, { role: currentLoginRole, arbiterSigned: true });
-      if (!r.ok) { alert(r.error); return; }
-    } else if (action === 'arbiter-release') {
-      const r = resolveDisputeByArbiter(state, cId, 'RELEASE_FREELANCER', 0, { role: currentLoginRole, arbiterSigned: true });
-      if (!r.ok) { alert(r.error); return; }
-    } else if (action === 'arbiter-refund') {
-      const r = resolveDisputeByArbiter(state, cId, 'REFUND_CLIENT', 100, { role: currentLoginRole, arbiterSigned: true });
-      if (!r.ok) { alert(r.error); return; }
+      const recBuyer = Number(slider?.getAttribute('data-rec-buyer-percent') ?? contract.recommendedBuyerPercent ?? 100);
+      let resolution = 'CUSTOM_SPLIT';
+      let buyerPct = recBuyer;
+      const keepOriginal = action === 'arbiter-keep-original';
+      if (action === 'arbiter-ai-bailiff') {
+        buyerPct = Number(btn.getAttribute('data-buyer-percent') ?? recBuyer);
+      } else if (action === 'arbiter-keep-original') {
+        buyerPct = Number(btn.getAttribute('data-buyer-percent') ?? contract.disputeResolution?.buyerPct ?? recBuyer);
+      } else if (action === 'arbiter-custom-split') {
+        buyerPct = slider ? Number(slider.value) : 35;
+      } else if (action === 'arbiter-release') {
+        resolution = 'RELEASE_FREELANCER';
+        buyerPct = 0;
+      } else if (action === 'arbiter-refund') {
+        resolution = 'REFUND_CLIENT';
+        buyerPct = 100;
+      }
+
+      const justInput = document.getElementById('arbiter-justification-input');
+      const arbiterJustification = (justInput?.value || '').trim();
+      const devBox = document.getElementById('arbiter-deviation-box');
+      if (buyerPct !== recBuyer && !keepOriginal && arbiterJustification.length < 20) {
+        if (devBox) devBox.hidden = false;
+        justInput?.focus();
+        alert('Phán quyết lệch với đề xuất của AI Agent bắt buộc phải nhập lý do giải trình (tối thiểu 20 ký tự).');
+        return;
+      }
+
+      let resolvedViaApi = false;
+      try {
+        if (typeof fetch === 'function') {
+          const resp = await fetch(`/api/contracts/${encodeURIComponent(cId)}/resolve-dispute`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-user-role': currentLoginRole || 'arbiter',
+              ...(getStoredArbiterToken() ? { 'x-arbiter-token': getStoredArbiterToken() } : {})
+            },
+            body: JSON.stringify({
+              role: currentLoginRole || 'arbiter',
+              resolution,
+              buyerPct,
+              customBuyerPercent: buyerPct,
+              arbiterSigned: true,
+              keepOriginal,
+              arbiterJustification
+            })
+          });
+          const data = await resp.json().catch(() => ({}));
+          if (!resp.ok || !data.ok) {
+            alert(data.error || 'Không thể lưu phán quyết Trọng tài.');
+            return;
+          }
+          if (data.contract) {
+            const idx = state.contracts.findIndex((item) => item.id === cId);
+            if (idx >= 0) state.contracts[idx] = { ...state.contracts[idx], ...data.contract };
+          }
+          resolvedViaApi = true;
+        }
+      } catch (err) {
+        console.warn('Resolve dispute API fallback:', err?.message);
+      }
+      if (!resolvedViaApi) {
+        const r = resolveDisputeByArbiter(state, cId, resolution, buyerPct, {
+          role: currentLoginRole,
+          arbiterSigned: true,
+          keepOriginal,
+          arbiterJustification,
+          requireJustification: true,
+          enterAppealWindow: true
+        });
+        if (!r.ok) { alert(r.error); return; }
+      }
     }
 
     await syncStateWithServer(true);

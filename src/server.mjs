@@ -18,7 +18,20 @@ import {
   runFactFindingBailiffAgentLive,
   fetchAvalancheContext
 } from './agents.js';
-import { createInitialEscrowState, triggerTimelockAutoRelease, releasePartialMilestone, resolveDisputeByArbiter, submitDeliverable, requestContractRevision, createEscrowContract, openDisputeWithEvidence } from './app.js';
+import {
+  createInitialEscrowState,
+  triggerTimelockAutoRelease,
+  releasePartialMilestone,
+  resolveDisputeByArbiter,
+  submitDisputeAppeal,
+  agreeDisputeResolution,
+  finalizeDisputeResolution,
+  normalizeAwaitingConfirmationStatus,
+  submitDeliverable,
+  requestContractRevision,
+  createEscrowContract,
+  openDisputeWithEvidence
+} from './app.js';
 import { assertMultiSig2Of3 } from './engine/multiSigGuard.mjs';
 import { createBaseline, loadBaseline } from './engine/baselineManager.mjs';
 import { evaluateSubmission } from './engine/ruleEngine.mjs';
@@ -74,7 +87,14 @@ const MIME_TYPES = {
 };
 
 // Dữ liệu động trên bộ nhớ Server (In-memory Dynamic Store)
-let serverEscrowState = createInitialEscrowState();
+function normalizeEscrowStateContracts(state) {
+  if (Array.isArray(state?.contracts)) {
+    state.contracts.forEach((c) => normalizeAwaitingConfirmationStatus(c));
+  }
+  return state;
+}
+
+let serverEscrowState = normalizeEscrowStateContracts(createInitialEscrowState());
 const latestEvaluationReports = new Map();
 
 function persistEscrowStateToDisk(state) {
@@ -666,6 +686,14 @@ export function createPreviewServer() {
         if (actionMode === 'freeze') {
           openRes.contract.status = 'FROZEN';
         }
+        const bailiff = runFactFindingBailiffAgent(openRes.contract);
+        openRes.contract.recommendedBuyerPercent = bailiff.recommendedBuyerPercent;
+        openRes.contract.recommendedSellerPercent = bailiff.recommendedSellerPercent;
+        openRes.contract.agentRecommendation = {
+          buyerPct: bailiff.recommendedBuyerPercent,
+          sellerPct: bailiff.recommendedSellerPercent,
+          proposalStatement: bailiff.proposalStatement
+        };
         persistEscrowStateToDisk(serverEscrowState);
         sendJson(res, 200, { ok: true, contract: openRes.contract });
       } catch (err) {
@@ -708,8 +736,8 @@ export function createPreviewServer() {
       return;
     }
 
-    // API Phân xử Tranh chấp có kiểm tra Multi-Sig 2-of-3 & Chống xung đột lợi ích
-    const resolveMatch = urlPath.match(/^\/api\/milestones\/([^/]+)\/resolve-dispute$/);
+    // API Phân xử Tranh chấp có kiểm tra Multi-Sig 2-of-3, Chống xung đột lợi ích & Lý do giải trình khi lệch AI
+    const resolveMatch = urlPath.match(/^\/api\/(?:contracts|milestones)\/([^/]+)\/resolve-dispute$/);
     if (resolveMatch && req.method === 'POST') {
       try {
         const contractId = decodeURIComponent(resolveMatch[1]);
@@ -720,15 +748,24 @@ export function createPreviewServer() {
           return;
         }
         const actorRole = String(body.role || req.headers['x-user-role'] || '').toLowerCase();
+        const buyerPct = body.buyerPct ?? body.customBuyerPercent ?? 35;
         const result = resolveDisputeByArbiter(
           serverEscrowState,
           contractId,
           body.resolution || 'CUSTOM_SPLIT',
-          body.customBuyerPercent ?? 35,
-          { role: actorRole || 'arbiter', actorId: body.actorId, arbiterSigned: Boolean(body.arbiterSigned) }
+          buyerPct,
+          {
+            role: actorRole || 'arbiter',
+            actorId: body.actorId,
+            arbiterSigned: Boolean(body.arbiterSigned),
+            keepOriginal: Boolean(body.keepOriginal),
+            arbiterJustification: body.arbiterJustification,
+            requireJustification: true,
+            enterAppealWindow: true
+          }
         );
         if (!result.ok) {
-          const status = /Multi-Sig|xung đột|vai trò/i.test(result.error || '') ? 403 : 400;
+          const status = result.statusCode || (/Multi-Sig|xung đột|vai trò/i.test(result.error || '') ? 403 : 400);
           sendJson(res, status, result);
           return;
         }
@@ -737,6 +774,62 @@ export function createPreviewServer() {
       } catch (err) {
         sendJson(res, err.statusCode || 400, { ok: false, error: err.message });
       }
+      return;
+    }
+
+    // API Gửi Khiếu nại Phán quyết Trọng tài (POST /api/contracts/:id/appeal)
+    const appealMatch = urlPath.match(/^\/api\/contracts\/([^/]+)\/appeal$/);
+    if (appealMatch && req.method === 'POST') {
+      try {
+        const contractId = decodeURIComponent(appealMatch[1]);
+        const body = await readJsonBody(req);
+        const actorRole = String(body.role || req.headers['x-user-role'] || '').toLowerCase();
+        const appealReason = body.reason ?? body.message ?? body.note ?? '';
+        const result = submitDisputeAppeal(
+          serverEscrowState,
+          contractId,
+          { role: actorRole, actorId: body.actorId },
+          { reason: appealReason, evidence: body.evidence }
+        );
+        if (!result.ok) {
+          sendJson(res, result.statusCode || 400, result);
+          return;
+        }
+        persistEscrowStateToDisk(serverEscrowState);
+        sendJson(res, 200, result);
+      } catch (err) {
+        sendJson(res, err.statusCode || 400, { ok: false, error: err.message });
+      }
+      return;
+    }
+
+    // API Đồng ý phán quyết Trọng tài (POST /api/contracts/:id/agree-resolution | accept-resolution | confirm-resolution) - Tự động giải ngân nếu đủ điều kiện
+    const agreeMatch = urlPath.match(/^\/api\/contracts\/([^/]+)\/(?:agree|accept|confirm)-resolution$/);
+    if (agreeMatch && req.method === 'POST') {
+      try {
+        const contractId = decodeURIComponent(agreeMatch[1]);
+        const body = await readJsonBody(req).catch(() => ({}));
+        const actorRole = String(body.role || req.headers['x-user-role'] || '').toLowerCase();
+        const result = agreeDisputeResolution(serverEscrowState, contractId, { role: actorRole });
+        if (!result.ok) {
+          sendJson(res, result.statusCode || 400, result);
+          return;
+        }
+        persistEscrowStateToDisk(serverEscrowState);
+        sendJson(res, 200, result);
+      } catch (err) {
+        sendJson(res, err.statusCode || 400, { ok: false, error: err.message });
+      }
+      return;
+    }
+
+    // Đã xóa bỏ chốt thủ công: endpoint finalize-resolution bị khóa (403) vì hệ thống tự động giải ngân
+    const finalizeMatch = urlPath.match(/^\/api\/contracts\/([^/]+)\/finalize-resolution$/);
+    if (finalizeMatch && req.method === 'POST') {
+      sendJson(res, 403, {
+        ok: false,
+        error: 'Đã bỏ nút chốt thủ công: hệ thống tự động giải ngân khi đủ điều kiện xác nhận hoặc hết quyền khiếu nại.'
+      });
       return;
     }
 
@@ -812,11 +905,20 @@ export function createPreviewServer() {
           hitlDisputeResolutionRatio: body.hitlDisputeResolutionRatio ?? 0.5
         });
 
+        const isZeroOrBlocked =
+          evaluationReport?.deterministicScore === 0 ||
+          recommendation.freelancerPercent === 0 ||
+          recommendation.ruleApplied === 'BLOCKER_VIOLATION_REFUND_100';
+        const recommendedBuyerPct = isZeroOrBlocked ? 100 : recommendation.clientPercent;
+        const recommendedSellerPct = 100 - recommendedBuyerPct;
+
         sendJson(res, 200, {
           ok: true,
           milestoneId,
           agreementId: baseline.agreementId,
           baselineHash: baseline.baselineHash,
+          recommendedBuyerPct,
+          recommendedSellerPct,
           ...recommendation
         });
       } catch (err) {

@@ -256,7 +256,8 @@ export function buildConsistentAgentRecommendation({
   allObjectivePassed = false,
   passedCount = 0,
   totalCount = 0,
-  failedReasons = []
+  failedReasons = [],
+  hasCoreViolation = false
 } = {}) {
   const passed = Math.max(0, Number(passedCount) || 0);
   const total = Math.max(0, Number(totalCount) || 0);
@@ -265,6 +266,9 @@ export function buildConsistentAgentRecommendation({
     .filter(Boolean);
 
   if (!allObjectivePassed) {
+    const isZeroOrCoreFail = passed === 0 || Boolean(hasCoreViolation);
+    const recommendedSellerPct = isZeroOrCoreFail ? 0 : Math.max(0, Math.min(100, Math.round((passed / (total || 1)) * 100)));
+    const recommendedBuyerPct = 100 - recommendedSellerPct;
     const reasonText = reasons.length > 0 ? reasons.join('; ') : 'chưa đạt đủ 100% tiêu chí kiểm chứng';
     return {
       passed: false,
@@ -272,7 +276,11 @@ export function buildConsistentAgentRecommendation({
       statusLabel: `⚠️ Không đạt (${passed}/${total || 1} tiêu chí)`,
       decision: 'REQUEST_FIX',
       targetRole: 'FREELANCER (Seller)',
-      message: `Phát hiện tiêu chí kỹ thuật chưa đạt (${reasonText}). Đề xuất yêu cầu Freelancer sửa lỗi hoặc hoàn trả quỹ cho Client nếu mở tranh chấp.`
+      recommendedBuyerPct,
+      recommendedSellerPct,
+      message: isZeroOrCoreFail
+        ? `Phát hiện sản phẩm đạt 0% hoặc vi phạm tiêu chí cốt lõi (${reasonText}). Đề xuất mặc định: 100% Buyer (Hoàn 100% cho khách) nếu mở tranh chấp.`
+        : `Phát hiện tiêu chí kỹ thuật chưa đạt (${reasonText}). Đề xuất yêu cầu Freelancer sửa lỗi hoặc hoàn trả quỹ cho Client nếu mở tranh chấp.`
     };
   }
 
@@ -282,6 +290,8 @@ export function buildConsistentAgentRecommendation({
     statusLabel: `✅ Đạt 100% (${passed}/${total || passed} tiêu chí)`,
     decision: 'RECOMMEND_RELEASE',
     targetRole: 'CLIENT (Buyer)',
+    recommendedBuyerPct: 0,
+    recommendedSellerPct: 100,
     message: `Sản phẩm đã vượt qua ${passed}/${total || passed} tiêu chí kỹ thuật khách quan. Đủ điều kiện để Client nghiệm thu và giải ngân thanh toán cho Freelancer.`
   };
 }
@@ -439,7 +449,14 @@ export function runFactFindingBailiffAgent(contract) {
     failedCriteria = [c.failedStepText || 'Chưa có kết quả kiểm thử đạt chuẩn'];
   }
 
-  const recommendedSellerPercent = verifiedCompletionPercent === 0 || isEmptyOrInvalid ? 0 : verifiedCompletionPercent;
+  const hasCoreViolation = Boolean(
+    v?.coreViolation ||
+      v?.criticalViolation ||
+      v?.blocked ||
+      v?.hasBlockers ||
+      (Array.isArray(v?.forbiddenViolations) && v.forbiddenViolations.length > 0)
+  );
+  const recommendedSellerPercent = verifiedCompletionPercent === 0 || isEmptyOrInvalid || hasCoreViolation ? 0 : verifiedCompletionPercent;
   const recommendedBuyerPercent = 100 - recommendedSellerPercent;
 
   const dossierHashInfo = computeProofHashAndCid(
@@ -464,6 +481,8 @@ export function runFactFindingBailiffAgent(contract) {
     verifiedCompletionPercent,
     recommendedSellerPercent,
     recommendedBuyerPercent,
+    recommendedSellerPct: recommendedSellerPercent,
+    recommendedBuyerPct: recommendedBuyerPercent,
     dossierSections: {
       signedChecklistAnchor: `Đã đối chiếu Hợp đồng gốc [${c.id}] & Checklist Hash bất biến (${c.acceptanceCriteria}).`,
       deliveryAndCommitTimeline: `Freelancer (${c.freelancer}) nộp link: ${c.deliverableUrl || 'Chưa có'} (commit: ${c.commitHash || 'N/A'}).`,
