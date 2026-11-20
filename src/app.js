@@ -48,6 +48,16 @@ export function escapeHtml(str) {
 }
 
 /**
+ * Nhận diện môi trường static hosting (Cloudflare Pages / Vercel static) không có Node backend tại /api/*.
+ * Chỉ trả về true khi HTTP là 404/405/501 và server không trả JSON lỗi nghiệp vụ từ server.mjs.
+ */
+function isStaticNoBackendResponse(resp, data) {
+  if (!resp) return true;
+  if (data && (data.error || data.ok === false)) return false;
+  return resp.status === 404 || resp.status === 405 || resp.status === 501;
+}
+
+/**
  * Xác thực Trọng tài (Arbiter) qua Header Token trên Server (POST /api/auth/arbiter).
  */
 export async function verifyArbiterTokenOnServer(token) {
@@ -60,8 +70,12 @@ export async function verifyArbiterTokenOnServer(token) {
       'x-arbiter-token': cleanToken
     }
   });
+  const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    return { ok: false, error: 'Token Trọng tài không chính xác.' };
+    if (isStaticNoBackendResponse(res, data)) {
+      return { ok: true, token: cleanToken, staticFallback: true };
+    }
+    return { ok: false, error: data.error || 'Token Trọng tài không chính xác.' };
   }
   return { ok: true, token: cleanToken };
 }
@@ -3695,14 +3709,17 @@ export function initBrowserApp() {
           });
           const data = await resp.json().catch(() => ({}));
           if (!resp.ok || !data.ok) {
-            alert(data.error || data.message || `Không thể gửi khiếu nại (HTTP ${resp.status}).`);
-            return;
+            if (!isStaticNoBackendResponse(resp, data)) {
+              alert(data.error || data.message || `Không thể gửi khiếu nại (HTTP ${resp.status}).`);
+              return;
+            }
+          } else {
+            if (data.contract) {
+              const idx = state.contracts.findIndex((item) => item.id === targetCId);
+              if (idx >= 0) state.contracts[idx] = { ...state.contracts[idx], ...data.contract };
+            }
+            appealedViaApi = true;
           }
-          if (data.contract) {
-            const idx = state.contracts.findIndex((item) => item.id === targetCId);
-            if (idx >= 0) state.contracts[idx] = { ...state.contracts[idx], ...data.contract };
-          }
-          appealedViaApi = true;
         }
         if (!appealedViaApi) {
           const r = submitDisputeAppeal(state, targetCId, { role: currentLoginRole }, { reason, evidence });
@@ -3895,14 +3912,17 @@ export function initBrowserApp() {
           });
           const data = await resp.json().catch(() => ({}));
           if (!resp.ok || !data.ok) {
-            alert(data.error || data.message || `Không thể xác nhận đồng ý (HTTP ${resp.status}).`);
-            return;
+            if (!isStaticNoBackendResponse(resp, data)) {
+              alert(data.error || data.message || `Không thể xác nhận đồng ý (HTTP ${resp.status}).`);
+              return;
+            }
+          } else {
+            if (data.contract) {
+              const idx = state.contracts.findIndex((item) => item.id === cId);
+              if (idx >= 0) state.contracts[idx] = { ...state.contracts[idx], ...data.contract };
+            }
+            agreedViaApi = true;
           }
-          if (data.contract) {
-            const idx = state.contracts.findIndex((item) => item.id === cId);
-            if (idx >= 0) state.contracts[idx] = { ...state.contracts[idx], ...data.contract };
-          }
-          agreedViaApi = true;
         }
       } catch (err) {
         console.warn('Agree resolution API fallback:', err?.message);
@@ -3973,14 +3993,17 @@ export function initBrowserApp() {
           });
           const data = await resp.json().catch(() => ({}));
           if (!resp.ok || !data.ok) {
-            alert(data.error || 'Không thể lưu phán quyết Trọng tài.');
-            return;
+            if (!isStaticNoBackendResponse(resp, data)) {
+              alert(data.error || 'Không thể lưu phán quyết Trọng tài.');
+              return;
+            }
+          } else {
+            if (data.contract) {
+              const idx = state.contracts.findIndex((item) => item.id === cId);
+              if (idx >= 0) state.contracts[idx] = { ...state.contracts[idx], ...data.contract };
+            }
+            resolvedViaApi = true;
           }
-          if (data.contract) {
-            const idx = state.contracts.findIndex((item) => item.id === cId);
-            if (idx >= 0) state.contracts[idx] = { ...state.contracts[idx], ...data.contract };
-          }
-          resolvedViaApi = true;
         }
       } catch (err) {
         console.warn('Resolve dispute API fallback:', err?.message);
