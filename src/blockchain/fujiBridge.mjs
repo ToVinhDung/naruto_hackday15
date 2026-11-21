@@ -47,6 +47,18 @@ export async function anchorProofOnFuji({
   rpcUrl = process.env.FUJI_RPC_URL || DEFAULT_FUJI_RPC,
   privateKey = process.env.AGENT_RELAY_PRIVATE_KEY || ''
 } = {}) {
+  if (typeof process !== 'undefined' && process.env.OFFLINE_MODE === 'true') {
+    const proofDigest = toBytes32(testReportHash || deliverableHash || `${milestoneId}-${score}`);
+    return {
+      onChain: false,
+      offlineMode: true,
+      chainId: 43113,
+      proofSha256: proofDigest,
+      reason: 'OFFLINE_MODE=true: Đã ghi nhận Off-chain SHA-256 Proof (không gọi RPC Avalanche Fuji).',
+      txHash: null,
+      snowtraceUrl: null
+    };
+  }
   if (!fs.existsSync(deploymentPath)) {
     return {
       onChain: false,

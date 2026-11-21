@@ -500,7 +500,8 @@ export function runFactFindingBailiffAgent(contract) {
  * Tự động thử chuỗi model dự phòng nếu model chính quá tải (503) hoặc không khả dụng (404).
  */
 async function callGeminiJson(prompt, options = {}) {
-  const apiKey = options.apiKey || (typeof process !== 'undefined' ? process.env.GEMINI_API_KEY : '');
+  if (typeof process !== 'undefined' && process.env.OFFLINE_MODE === 'true') return null;
+  const apiKey = options.apiKey || (typeof process !== 'undefined' ? (process.env.GEMINI_API_KEY || process.env.LLM_API_KEY) : '');
   if (!apiKey) return null;
 
   const primaryModel =
@@ -552,6 +553,7 @@ async function callGeminiJson(prompt, options = {}) {
  * Lấy metadata thực tế từ GitHub API (hỗ trợ GITHUB_TOKEN cho repo private & tăng rate limit) để cung cấp ngữ cảnh cho Agent Tầng 2–3.
  */
 async function fetchGitHubContext(repoUrl) {
+  if (typeof process !== 'undefined' && process.env.OFFLINE_MODE === 'true') return null;
   const match = String(repoUrl || '').match(
     /^https?:\/\/(?:www\.)?github\.com\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/(pull|commit)\/([^/?#]+))?(?:[/?#].*)?$/i
   );
@@ -820,6 +822,7 @@ export async function runFactFindingBailiffAgentLive(contract) {
  * Hỗ trợ kiểm tra trạng thái chuỗi (chainId, mặc định 43114 C-Chain), block mới nhất, số dư hoặc giao dịch on-chain.
  */
 export async function fetchAvalancheContext({ chainId, address, txHash } = {}) {
+  if (typeof process !== 'undefined' && process.env.OFFLINE_MODE === 'true') return null;
   const apiKey = typeof process !== 'undefined' ? process.env.AVALANCHE_API_KEY : '';
   const targetChain = String(chainId || (typeof process !== 'undefined' ? process.env.AVALANCHE_CHAIN_ID : '') || '43114');
   const network = targetChain === '43113' ? 'testnet' : 'mainnet';

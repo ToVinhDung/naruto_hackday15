@@ -1634,12 +1634,14 @@ export function ensureContractDisputeResolution(contract) {
   const fallbackObj =
     contract.disputeResolution ||
     contract.arbiterDecision ||
+    contract.arbiterVerdict ||
     (contract.resolution && typeof contract.resolution === 'object' ? contract.resolution : null) ||
     contract.splitRatio ||
     contract.appealWindow;
 
   const hasRulingSignal =
     Boolean(fallbackObj) ||
+    Boolean(contract.resolution) ||
     contract.status === 'AWAITING_CONFIRMATION' ||
     contract.status === 'APPEAL_WINDOW' ||
     contract.signatures?.arbiter === true;
@@ -1820,11 +1822,17 @@ export function agreeDisputeResolution(state, contractId, actorContext = {}) {
   normalizeAwaitingConfirmationStatus(contract);
   const hasArbiterRuling =
     contract.status !== 'COMPLETED' &&
-    (Boolean(contract.disputeResolution) || contract.signatures?.arbiter === true);
+    (Boolean(contract.disputeResolution) ||
+      Boolean(contract.arbiterDecision) ||
+      Boolean(contract.arbiterVerdict) ||
+      Boolean(contract.resolution) ||
+      contract.status === 'AWAITING_CONFIRMATION' ||
+      contract.status === 'APPEAL_WINDOW' ||
+      contract.signatures?.arbiter === true);
   if (hasArbiterRuling && contract.status !== 'AWAITING_CONFIRMATION' && contract.status !== 'APPEAL_WINDOW') {
     contract.status = 'AWAITING_CONFIRMATION';
   }
-  if (contract.status !== 'AWAITING_CONFIRMATION' && contract.status !== 'APPEAL_WINDOW' && !hasArbiterRuling) {
+  if (!hasArbiterRuling) {
     return { ok: false, statusCode: 400, error: 'Hợp đồng chưa có phán quyết từ Trọng tài để xác nhận.' };
   }
   const rawRole = String(actorContext.role || '').toLowerCase();
@@ -1944,6 +1952,10 @@ export function initBrowserApp() {
   let currentLoginRole = 'client';
   let activePopupContractId = null;
   let bankDashboard;
+  let isOfflineDemoMode = false;
+  let offlineArbiterHint = 'arbiter2026';
+  const offlineModeBadgeEl = document.getElementById('offline-mode-badge');
+  const arbiterOfflineHintEl = document.getElementById('arbiter-offline-hint');
 
   const walletCardClientEl = document.getElementById('wallet-card-client');
   const walletCardFreelancerEl = document.getElementById('wallet-card-freelancer');
@@ -2031,6 +2043,13 @@ export function initBrowserApp() {
   async function syncStateWithServer(pushUpdate = false) {
     try {
       const health = await callDynamicApi('/api/health', 'GET');
+      if (health?.status === 'ok') {
+        isOfflineDemoMode = Boolean(health.offlineMode);
+        if (health.arbiterOfflineHint) offlineArbiterHint = health.arbiterOfflineHint;
+        if (offlineModeBadgeEl) {
+          offlineModeBadgeEl.hidden = !isOfflineDemoMode;
+        }
+      }
       if (!pushUpdate && health?.status === 'ok') {
         const remote = await callDynamicApi(`/api/state?role=${encodeURIComponent(currentLoginRole)}`, 'GET');
         if (remote && Array.isArray(remote.contracts)) {
@@ -3417,7 +3436,12 @@ export function initBrowserApp() {
   function switchLoginRole(role, bypassAuth = false) {
     if (role === 'arbiter' && !bypassAuth && currentLoginRole !== 'arbiter') {
       if (arbiterAuthModal) {
-        if (arbiterPasswordInput) arbiterPasswordInput.value = '';
+        if (arbiterPasswordInput) {
+          arbiterPasswordInput.value = isOfflineDemoMode ? offlineArbiterHint || 'arbiter2026' : '';
+        }
+        if (arbiterOfflineHintEl) {
+          arbiterOfflineHintEl.hidden = !isOfflineDemoMode;
+        }
         if (arbiterAuthErrorEl) {
           arbiterAuthErrorEl.hidden = true;
           arbiterAuthErrorEl.textContent = '';

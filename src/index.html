@@ -42,7 +42,7 @@
           <button type="button" class="bank-icon-button bank-menu-toggle" id="bank-menu-toggle" aria-label="Mở menu" aria-controls="bank-sidebar" aria-expanded="false"><span data-bank-icon="menu"></span></button>
           <span class="bank-breadcrumb-root">Không gian làm việc</span><span class="bank-breadcrumb-divider">/</span><strong id="bank-breadcrumb">Tổng quan</strong>
         </div>
-        <div class="bank-topbar-right"><span class="bank-demo-tag">Bản demo</span><span id="bank-current-date"></span>
+        <div class="bank-topbar-right"><span class="pill pill-emerald" id="offline-mode-badge" hidden style="font-size:0.72rem;">🟢 Offline Demo Mode (No API Key Required)</span><span class="bank-demo-tag">Bản demo</span><span id="bank-current-date"></span>
           <button type="button" class="bank-icon-button bank-notification-button" id="bank-notification-button" data-bank-action="notifications" aria-label="Xem mục cần chú ý"><span data-bank-icon="bell"></span><i id="bank-notification-dot"></i></button>
           <div class="bank-profile"><span class="bank-avatar" id="bank-profile-initials">KH</span><span><strong id="bank-profile-role">Khách hàng</strong><small>VibeEscrow Workspace</small></span></div>
         </div>
@@ -675,6 +675,9 @@ Giao diện đẹp</textarea>
               autocomplete="current-password"
               required
             />
+            <div id="arbiter-offline-hint" style="font-size:0.74rem;color:#047857;margin-top:0.35rem;font-weight:600;" hidden>
+              🟢 Offline Demo Mode: Mật khẩu mặc định là <code>arbiter2026</code> (đã điền sẵn để Ban Giám Khảo đăng nhập nhanh).
+            </div>
           </div>
           <div id="arbiter-auth-error" class="alert-box alert-error" style="margin-bottom:0.85rem;font-size:0.78rem;" hidden></div>
           <div style="display:flex;gap:0.5rem;justify-content:flex-end;">

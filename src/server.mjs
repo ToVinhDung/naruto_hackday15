@@ -65,6 +65,29 @@ function loadEnvFile() {
 
 loadEnvFile();
 
+export function isOfflineMode() {
+  return String(process.env.OFFLINE_MODE || '').trim().toLowerCase() === 'true';
+}
+
+function isIsolatedTestOrOffline() {
+  return (
+    isOfflineMode() ||
+    process.env.NODE_ENV === 'test' ||
+    process.execArgv.includes('--test') ||
+    process.argv.some((a) => /\.test\.mjs$/i.test(String(a || '')))
+  );
+}
+
+export function isValidArbiterToken(token) {
+  const clean = String(token || '').trim();
+  if (!clean) return false;
+  const configured = String(process.env.ARBITER_PASSWORD || process.env.ARBITER_AUTH_TOKEN || '').trim();
+  if (isOfflineMode() || !configured) {
+    if (timingSafeMatch(clean, 'arbiter2026')) return true;
+  }
+  return timingSafeMatch(clean, configured || 'naruto');
+}
+
 // Respect the host/port supplied by preview tools; local start.bat still uses 3000.
 const cliOption = (name) => {
   const index = process.argv.indexOf(name);
@@ -94,10 +117,27 @@ function normalizeEscrowStateContracts(state) {
   return state;
 }
 
+function patchPersistedDbOnStartup() {
+  if (isIsolatedTestOrOffline()) return;
+  try {
+    const dbPath = path.join(ROOT_DIR, 'data', 'db.json');
+    if (!fs.existsSync(dbPath)) return;
+    const raw = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
+    if (Array.isArray(raw?.contracts)) {
+      normalizeEscrowStateContracts(raw);
+      fs.writeFileSync(dbPath, JSON.stringify(raw, null, 2), 'utf8');
+    }
+  } catch {
+    // Bỏ qua nếu không đọc/ghi được db.json
+  }
+}
+
+patchPersistedDbOnStartup();
 let serverEscrowState = normalizeEscrowStateContracts(createInitialEscrowState());
 const latestEvaluationReports = new Map();
 
 function persistEscrowStateToDisk(state) {
+  if (isIsolatedTestOrOffline()) return;
   try {
     const dbPath = path.join(ROOT_DIR, 'data', 'db.json');
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -214,8 +254,7 @@ function verifyWriteAuthorization(req) {
   const bearer = String(req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim();
   const token = String(req.headers['x-arbiter-token'] || bearer || '').trim();
   if (claimedRole === 'arbiter' || token) {
-    const expectedToken = process.env.ARBITER_AUTH_TOKEN || 'naruto';
-    if (!timingSafeMatch(token, expectedToken)) {
+    if (!isValidArbiterToken(token)) {
       return { authorized: false, error: 'Unauthorized: Token Trọng tài không hợp lệ.' };
     }
   }
@@ -248,20 +287,27 @@ export function createPreviewServer() {
       }
     }
 
-    if (urlPath === '/api/health') {
+    if (urlPath === '/api/health' || urlPath === '/api/config') {
+      const offline = isOfflineMode();
       sendJson(res, 200, {
         status: 'ok',
+        offlineMode: offline,
         engine: 'Google Antigravity + PowerBatch + Vercel',
         uiTheme: 'Pure White (#FFFFFF)',
         dynamicApi: true,
-        geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+        geminiConfigured: !offline && Boolean(process.env.GEMINI_API_KEY || process.env.LLM_API_KEY),
         geminiModel: process.env.GEMINI_MODEL || 'gemini-flash-latest',
-        githubConfigured: Boolean(process.env.GITHUB_TOKEN),
-        avalancheConfigured: Boolean(process.env.AVALANCHE_API_KEY),
+        githubConfigured: !offline && Boolean(process.env.GITHUB_TOKEN),
+        avalancheConfigured: !offline && Boolean(process.env.AVALANCHE_API_KEY),
         avalancheChainId: process.env.AVALANCHE_CHAIN_ID || '43114',
-        llmEngine: process.env.GEMINI_API_KEY ? 'LLM_ONLINE (Gemini)' : 'RULE_FALLBACK_ACTIVE',
-        sandboxRunner: 'Ready (30s/45s Isolated)',
-        timelockMonitor: 'Active (15s Worker)'
+        llmEngine: offline
+          ? 'RULE_FALLBACK_ACTIVE (Offline Mode)'
+          : process.env.GEMINI_API_KEY || process.env.LLM_API_KEY
+          ? 'LLM_ONLINE (Gemini)'
+          : 'RULE_FALLBACK_ACTIVE',
+        sandboxRunner: offline ? 'Simulated Local + SHA-256' : 'Ready (30s/45s Isolated)',
+        timelockMonitor: 'Active (15s Worker)',
+        arbiterOfflineHint: offline || !(process.env.ARBITER_PASSWORD || process.env.ARBITER_AUTH_TOKEN) ? 'arbiter2026' : null
       });
       return;
     }
@@ -277,12 +323,11 @@ export function createPreviewServer() {
     if (urlPath === '/api/auth/arbiter' && req.method === 'POST') {
       const bearer = String(req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim();
       const headerToken = String(req.headers['x-arbiter-token'] || bearer || '').trim();
-      const expectedToken = process.env.ARBITER_AUTH_TOKEN || 'naruto';
-      if (!timingSafeMatch(headerToken, expectedToken)) {
+      if (!isValidArbiterToken(headerToken)) {
         sendJson(res, 401, { ok: false, error: 'Token Trọng tài không hợp lệ.' });
         return;
       }
-      sendJson(res, 200, { ok: true, role: 'arbiter' });
+      sendJson(res, 200, { ok: true, role: 'arbiter', offlineMode: isOfflineMode() });
       return;
     }
 

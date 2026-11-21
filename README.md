@@ -60,7 +60,7 @@ naruto_hackday15/
 
 ---
 
-## 🚀 Cài đặt & Chạy dự án
+## 🚀 Cài đặt & Chạy với API Đầy đủ (`npm start` / Quickstart)
 
 ### 1. Yêu cầu hệ thống
 - **Node.js** `>= 18`
@@ -72,17 +72,22 @@ npm install
 cp .env.example .env
 ```
 
-Cập nhật các biến môi trường trong `.env` (tùy chọn khi chạy local, bắt buộc khi dùng LLM / deploy Fuji):
+Cập nhật các biến môi trường trong `.env`:
 - `GEMINI_API_KEY` — API key Google Gemini cho Agentic AI (nếu bỏ trống hệ thống tự chạy `RULE_FALLBACK_ACTIVE`).
 - `GITHUB_TOKEN` — Token GitHub (nếu cần tăng rate limit khi fetch repo/commit).
 - `AVALANCHE_API_KEY`, `FUJI_RPC_URL`, `DEPLOYER_PRIVATE_KEY`, `AGENT_RELAY_PRIVATE_KEY` — Cấu hình Avalanche Fuji Testnet.
-- `ARBITER_AUTH_TOKEN` — Token xác thực quyền Trọng tài trên server.
+- `ARBITER_AUTH_TOKEN` (hoặc `ARBITER_PASSWORD`) — Mật khẩu/Token xác thực quyền Trọng tài trên server (nếu chưa cấu hình, mặc định fallback là `arbiter2026`).
 
-### 3. Khởi chạy Server
+### 3. Khởi chạy Server (Standard API Mode)
 ```bash
-node src/server.mjs
+npm start
 ```
-*(Hoặc `npm run dev`)*
+*(Hoặc chạy `quickstart.cmd` / `start.bat` / `npm run dev` — mặc định kết nối đầy đủ API thật và lưu dữ liệu qua `data/db.json`.)*
+
+> **💡 Ghi chú Dự phòng cho Ban Giám Khảo (Chạy Không Cần Mạng / Không Cần API Key):**
+> Nếu máy không có `.env`, không có API Key hoặc không có Internet, bạn có thể chạy chế độ **Offline Demo Mode** hoàn toàn độc lập (dữ liệu lưu trong RAM, không chạm `data/db.json`, mật khẩu Trọng tài `arbiter2026`):
+> - **1-click trên Windows:** Double-click [`start-offline.bat`](start-offline.bat) (hoặc chạy `.\start-offline.ps1`).
+> - **CLI (Windows / macOS / Linux):** `npm run start:offline` (tương đương `OFFLINE_MODE=true node src/server.mjs`).
 
 ### 4. Chạy toàn bộ kiểm thử tự động
 ```bash

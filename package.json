@@ -4,6 +4,8 @@
   "description": "Hệ thống Vibe Coding chuẩn hóa cho Google Antigravity, tích hợp PowerBatch Orchestrator, Vercel Cloud Pipeline và White UI Design System",
   "type": "module",
   "scripts": {
+    "start": "node src/server.mjs",
+    "start:offline": "node -e \"process.env.OFFLINE_MODE='true'; import('./src/server.mjs')\"",
     "dev": "node src/server.mjs",
     "test": "node --test tests/system.test.mjs",
     "powerbatch": "node .antigravity/powerbatch.mjs verify",

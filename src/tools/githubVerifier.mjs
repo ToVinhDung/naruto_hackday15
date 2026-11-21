@@ -79,6 +79,17 @@ export async function fetchGitHubCommitDetails({ owner, repo, commitSha = 'HEAD'
   if (!owner || !repo) {
     return { ok: false, error: 'Missing owner or repo', changedFiles: [] };
   }
+  if (process.env.OFFLINE_MODE === 'true') {
+    return {
+      ok: true,
+      offlineMode: true,
+      sha: commitSha || 'HEAD',
+      message: '[Offline Demo] Simulated commit verification',
+      author: 'offline-sandbox',
+      stats: { total: 42, additions: 38, deletions: 4 },
+      changedFiles: ['src/index.js', 'tests/app.test.mjs']
+    };
+  }
   const token = githubToken || (typeof process !== 'undefined' ? process.env.GITHUB_TOKEN : '');
   const ref = String(commitSha || 'HEAD').replace(/^commit#/i, '').trim() || 'HEAD';
 
@@ -186,6 +197,26 @@ export async function runSandboxTests({
   const parsed = parseGitHubUrl(repoUrl);
   const normalizedCmdKey = String(testCommand || 'node --test').trim().toLowerCase();
   const cmdSpec = ALLOWED_TEST_COMMANDS.get(normalizedCmdKey) || ALLOWED_TEST_COMMANDS.get('node --test');
+
+  if (process.env.OFFLINE_MODE === 'true' && /^https?:\/\//i.test(String(repoUrl || '').trim())) {
+    const startOffline = Date.now();
+    const isNegativeDemo = /fail|empty|invalid|error/i.test(String(repoUrl || ''));
+    const passRate = isNegativeDemo ? 0 : 100;
+    const exitCode = isNegativeDemo ? 1 : 0;
+    return {
+      ok: !isNegativeDemo,
+      offlineMode: true,
+      exitCode,
+      executionTimeMs: Math.max(1, Date.now() - startOffline),
+      deliveredFiles: isNegativeDemo ? [] : ['src/index.js', 'tests/app.test.mjs', 'package.json'],
+      metrics: {
+        unit_test_pass_rate: passRate,
+        api_latency_ms: 85,
+        security_critical_issues: 0
+      },
+      testLog: `[OFFLINE_MODE] Simulated local sandbox run (${cmdSpec.cmd} ${cmdSpec.args.join(' ')}) -> passRate=${passRate}%`
+    };
+  }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'escrow-gh-sandbox-'));
   const startMs = Date.now();
